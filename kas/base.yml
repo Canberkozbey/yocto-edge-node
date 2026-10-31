@@ -1,0 +1,57 @@
+# Shared configuration: pinned upstream layers, distro, image and build policy.
+# Combine it with one machine file:
+#
+#   kas-container build kas/base.yml:kas/machine/qemuarm64.yml
+#
+# Keep base.yml first on the command line: `kas lock` writes base.lock.yml
+# next to it, so every machine shares one set of pinned revisions.
+
+header:
+  version: 20
+
+distro: edgenode
+target: edgenode-image
+
+repos:
+  # This repository.
+  edgenode:
+    layers:
+      meta-edgenode:
+
+  # Yocto Project 6.0 "wrynose" (LTS, supported until April 2030), pinned to
+  # the yocto-6.0.4 point release. The GitHub repositories are the official
+  # mirrors. To update: change tag and commit together.
+  bitbake:
+    url: https://github.com/openembedded/bitbake.git
+    tag: yocto-6.0.4
+    commit: 51fd94a67fa17650a9ff623492005972bbc7d26f
+    layers: {}
+
+  openembedded-core:
+    url: https://github.com/openembedded/openembedded-core.git
+    tag: yocto-6.0.4
+    commit: 0f03c732a0a2d0506b41b1abe60b3f368b2300dc
+    layers:
+      meta:
+
+  meta-yocto:
+    url: https://github.com/yoctoproject/meta-yocto.git
+    tag: yocto-6.0.4
+    commit: 7c25b11156553145fa6b241a2d4f65d94438f804
+    layers:
+      meta-poky:
+
+local_conf_header:
+  build-host: |
+    # Tuned for the build host (i7-13700KF, 32 GB RAM). Memory is the limit,
+    # not CPU: these multiply (up to 8 recipes building with 12 jobs each).
+    BB_NUMBER_THREADS = "8"
+    PARALLEL_MAKE = "-j 12"
+
+    # Delete each recipe's work directory once it is done. Rebuilds come from
+    # sstate, so this costs little and keeps tmp/ from filling the disk.
+    INHERIT += "rm_work"
+
+  development: |
+    # Development convenience only; the production configuration drops it.
+    EXTRA_IMAGE_FEATURES ?= "allow-empty-password empty-root-password allow-root-login"

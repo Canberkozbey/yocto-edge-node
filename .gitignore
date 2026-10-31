@@ -1,0 +1,12 @@
+# kas work directory contents, in case kas runs from the repository root.
+# The recommended setup keeps them outside (see README).
+/build/
+/bitbake/
+/openembedded-core/
+/meta-yocto/
+/meta-raspberrypi/
+/.kas_shell_history
+
+# Python
+__pycache__/
+.pytest_cache/

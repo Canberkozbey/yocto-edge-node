@@ -1,0 +1,7 @@
+# Emulated 64-bit Arm target. Used by CI on every push: builds and boots
+# without hardware.
+
+header:
+  version: 20
+
+machine: qemuarm64
