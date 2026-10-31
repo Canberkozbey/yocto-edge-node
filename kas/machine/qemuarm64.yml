@@ -5,3 +5,11 @@ header:
   version: 20
 
 machine: qemuarm64
+
+local_conf_header:
+  qemuarm64-console: |
+    # qemuarm64.conf also lists hvc0, but runqemu only creates that virtio
+    # console in graphical mode. With nographic (CI, tests) the hvc0 getty
+    # waits for a device that never appears, boot stays "starting" for 90 s
+    # and ends "degraded". The tests use ttyAMA0 and SSH.
+    SERIAL_CONSOLES = "115200;ttyAMA0"
