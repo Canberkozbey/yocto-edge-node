@@ -61,6 +61,18 @@ What the tests check:
 - `edgenoded` is active, runs as an unprivileged user and has its watchdog armed
 - `/health` answers on the target and from the host, and reports the installed version
 
+## CI
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) builds the image and
+runs the QEMU tests on every push to `main` and on pull requests. It runs on
+a self-hosted runner with the label `yocto`: a Yocto build needs more memory
+and disk than hosted runners offer, and the runner keeps the download and
+shared state caches between runs. Console logs and a JUnit report are kept
+as build artifacts.
+
+Runner host requirements: Docker, kas (with `kas-container` on `PATH`),
+`qemu-system-arm` and `python3-venv`.
+
 ## Design notes
 
 - **Upstream repositories, not the combined poky repository.** Since Yocto

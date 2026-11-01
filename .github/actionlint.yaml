@@ -1,0 +1,4 @@
+# Custom label of the self-hosted Yocto build runner (see README, CI).
+self-hosted-runner:
+  labels:
+    - yocto

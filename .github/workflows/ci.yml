@@ -1,0 +1,66 @@
+# Build the image and run the integration tests in QEMU on every push.
+#
+# Runs on a self-hosted runner: a Yocto build needs more memory and disk
+# than GitHub's hosted runners offer, and the runner keeps the download and
+# shared state caches between runs, so a typical run takes minutes.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# One build at a time per branch; a newer push cancels the older run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  qemuarm64:
+    name: Build and test (qemuarm64)
+    runs-on: [self-hosted, linux, x64, yocto]
+    timeout-minutes: 480
+    env:
+      KAS_FILES: kas/base.yml:kas/machine/qemuarm64.yml
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up work and cache directories
+        run: |
+          # Caches are shared with local development builds; the CI build
+          # directory is separate so CI never touches a developer's tmp/.
+          echo "DL_DIR=${DL_DIR:-$HOME/yocto/cache/downloads}" >> "$GITHUB_ENV"
+          echo "SSTATE_DIR=${SSTATE_DIR:-$HOME/yocto/cache/sstate}" >> "$GITHUB_ENV"
+          echo "KAS_WORK_DIR=$HOME/yocto/ci-work" >> "$GITHUB_ENV"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build
+        run: |
+          mkdir -p "$DL_DIR" "$SSTATE_DIR" "$KAS_WORK_DIR"
+          kas-container build "$KAS_FILES"
+
+      - name: Install test dependencies
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet -r tests/requirements.txt
+
+      - name: Integration tests (QEMU)
+        run: |
+          export LG_IMAGES="$KAS_WORK_DIR/build/tmp/deploy/images/qemuarm64"
+          .venv/bin/pytest --lg-env tests/env/qemu.yaml tests/ -v \
+            --lg-log=test-logs --junitxml=test-logs/junit.xml
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-logs-qemuarm64
+          path: test-logs/
+          if-no-files-found: ignore
