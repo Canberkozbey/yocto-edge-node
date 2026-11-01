@@ -16,9 +16,3 @@ def test_runs_edgenode_distro(shell):
 
 def test_init_is_systemd(shell):
     assert shell.run_check("cat /proc/1/comm") == ["systemd"]
-
-
-def test_no_graphics_stack_installed(shell):
-    # The distro removes x11/wayland/opengl; nothing should pull them back in.
-    _, _, code = shell.run("ls /usr/lib/libGL* /usr/lib/libwayland* 2>/dev/null")
-    assert code != 0

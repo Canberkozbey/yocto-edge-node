@@ -14,3 +14,4 @@ __pycache__/
 
 # Test logs written by CI and local runs
 /test-logs/
+/actions-runner/

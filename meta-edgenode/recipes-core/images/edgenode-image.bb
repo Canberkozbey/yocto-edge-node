@@ -1,6 +1,7 @@
-SUMMARY = "Edge node image"
+SUMMARY = "Edge node production image"
 DESCRIPTION = "Minimal systemd image for the edge node: boot essentials, \
-SSH access for the integration tests, and the node's own services."
+an SSH server and the node's own services. The root account is locked and \
+there is no password login; edgenode-image-dev adds development access."
 LICENSE = "MIT"
 
 inherit core-image

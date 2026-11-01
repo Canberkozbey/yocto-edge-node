@@ -37,13 +37,29 @@ kas-container build kas/base.yml:kas/machine/qemuarm64.yml
 The first build compiles the toolchain and takes a few hours. Later builds
 reuse shared state and take minutes.
 
+## Images
+
+| Image | For | Access |
+| --- | --- | --- |
+| `edgenode-image` | Production | Root account locked, no password login; SSH root login by key only (OpenSSH default) |
+| `edgenode-image-dev` | Development | Root without a password on the console and over SSH; `gdbserver` and `strace` |
+
+The development image is the production image plus those extras
+(`require edgenode-image.bb`), so both share every other package.
+
 ## Test
 
 Integration tests use [pytest](https://pytest.org) with
 [labgrid](https://labgrid.readthedocs.io). labgrid boots the built image in
-QEMU, logs in over the serial console and forwards a host port to the
-daemon's HTTP endpoint. The tests only talk to labgrid drivers, so the same
-tests can run on real hardware with a different environment file.
+QEMU, talks to it over the serial console and forwards host ports to the
+target's services. The tests only use labgrid drivers, so the same tests can
+run on real hardware with a different environment file.
+
+| Directory | Runs against | How |
+| --- | --- | --- |
+| `tests/dev` | development image | logs in as root on the console |
+| `tests/prod` | production image | no login possible: console prompts and forwarded ports only |
+| `tests/image` | both images, not booted | package manifests and files read from the ext4 images with `debugfs` |
 
 ```sh
 sudo apt install qemu-system-arm python3-venv
@@ -51,20 +67,27 @@ python3 -m venv .venv
 .venv/bin/pip install -r tests/requirements.txt
 
 export LG_IMAGES=$KAS_WORK_DIR/build/tmp/deploy/images/qemuarm64
-.venv/bin/pytest --lg-env tests/env/qemu.yaml tests/
+.venv/bin/pytest --lg-env tests/env/qemu-dev.yaml tests/dev
+.venv/bin/pytest --lg-env tests/env/qemu-prod.yaml tests/image tests/prod
 ```
 
 What the tests check:
 
 - boot finishes with no failed units, on the `edgenode` distro, with systemd as init
-- no graphics stack slipped into the image
 - `edgenoded` is active, runs as an unprivileged user and has its watchdog armed
 - `/health` answers on the target and from the host, and reports the installed version
+- production: root's console login asks for a password, SSH rejects root
+  without one, root's password field is locked, sshd allows neither empty
+  passwords nor root password logins, and no debug tools are installed
+- no graphics stack slipped into either image
+
+Each production check has a control in the development image that must give
+the opposite result, so a check that cannot tell the two apart fails.
 
 ## CI
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) builds the image and
-runs the QEMU tests on every push to `main` and on pull requests. It runs on
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) builds both images and
+runs the tests on every push to `main` and on pull requests. It runs on
 a self-hosted runner with the label `yocto`: a Yocto build needs more memory
 and disk than hosted runners offer, and the runner keeps the download and
 shared state caches between runs. Console logs and a JUnit report are kept

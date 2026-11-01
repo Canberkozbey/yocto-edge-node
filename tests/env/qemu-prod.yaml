@@ -1,0 +1,28 @@
+# labgrid environment: the production image in QEMU on the host. Nobody can
+# log in to this image, so there is no ShellDriver: the tests use the serial
+# console and forwarded network ports only.
+#
+# LG_IMAGES must point at the build's deploy directory, for example:
+#   export LG_IMAGES=~/yocto/work/build/tmp/deploy/images/qemuarm64
+
+targets:
+  main:
+    drivers:
+      QEMUDriver:
+        qemu_bin: qemu
+        machine: virt
+        cpu: cortex-a57
+        memory: 512M
+        extra_args: "-smp 4"
+        kernel: kernel
+        disk: rootfs
+        disk_opts: "snapshot=on"
+        boot_args: "console=ttyAMA0"
+        nic: "user,model=virtio-net-pci"
+
+tools:
+  qemu: /usr/bin/qemu-system-aarch64
+
+images:
+  kernel: !template $LG_IMAGES/Image
+  rootfs: !template $LG_IMAGES/edgenode-image-qemuarm64.rootfs.ext4

@@ -10,7 +10,12 @@ header:
   version: 20
 
 distro: edgenode
-target: edgenode-image
+
+# Production image and its development variant; they share every package
+# except the development extras.
+target:
+  - edgenode-image
+  - edgenode-image-dev
 
 repos:
   # This repository.
@@ -51,7 +56,3 @@ local_conf_header:
     # Delete each recipe's work directory once it is done. Rebuilds come from
     # sstate, so this costs little and keeps tmp/ from filling the disk.
     INHERIT += "rm_work"
-
-  development: |
-    # Development convenience only; the production configuration drops it.
-    EXTRA_IMAGE_FEATURES ?= "allow-empty-password empty-root-password allow-root-login"

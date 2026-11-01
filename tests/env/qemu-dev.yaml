@@ -1,4 +1,5 @@
-# labgrid environment: the image under test, booted in QEMU on the host.
+# labgrid environment: the development image in QEMU on the host. labgrid
+# logs in as root on the serial console (no password in this image).
 #
 # LG_IMAGES must point at the build's deploy directory, for example:
 #   export LG_IMAGES=~/yocto/work/build/tmp/deploy/images/qemuarm64
@@ -31,4 +32,4 @@ tools:
 
 images:
   kernel: !template $LG_IMAGES/Image
-  rootfs: !template $LG_IMAGES/edgenode-image-qemuarm64.rootfs.ext4
+  rootfs: !template $LG_IMAGES/edgenode-image-dev-qemuarm64.rootfs.ext4

@@ -1,16 +1,8 @@
 """edgenoded runs as intended and serves its health endpoint."""
 
 import json
-import urllib.error
-import urllib.request
 
-
-def _get(url):
-    try:
-        with urllib.request.urlopen(url, timeout=10) as response:
-            return response.status, response.read().decode()
-    except urllib.error.HTTPError as error:
-        return error.code, error.read().decode()
+import helpers
 
 
 def test_service_is_active(shell):
@@ -42,11 +34,11 @@ def test_health_on_target(shell):
 
 def test_health_reports_installed_version(shell, edgenoded_url):
     installed = shell.run_check("edgenoded --version")[0].split()[-1]
-    status, body = _get(f"{edgenoded_url}/health")
+    status, body = helpers.http_get(f"{edgenoded_url}/health")
     assert status == 200
     assert json.loads(body)["version"] == installed
 
 
 def test_unknown_path_is_404(edgenoded_url):
-    status, _ = _get(f"{edgenoded_url}/no-such-endpoint")
+    status, _ = helpers.http_get(f"{edgenoded_url}/no-such-endpoint")
     assert status == 404

@@ -51,11 +51,20 @@ jobs:
           python3 -m venv .venv
           .venv/bin/pip install --quiet -r tests/requirements.txt
 
-      - name: Integration tests (QEMU)
+      - name: Point the tests at the build output
+        run: echo "LG_IMAGES=$KAS_WORK_DIR/build/tmp/deploy/images/qemuarm64" >> "$GITHUB_ENV"
+
+      - name: Tests, development image (QEMU)
         run: |
-          export LG_IMAGES="$KAS_WORK_DIR/build/tmp/deploy/images/qemuarm64"
-          .venv/bin/pytest --lg-env tests/env/qemu.yaml tests/ -v \
-            --lg-log=test-logs --junitxml=test-logs/junit.xml
+          .venv/bin/pytest --lg-env tests/env/qemu-dev.yaml tests/dev -v \
+            --lg-log=test-logs/dev --junitxml=test-logs/dev.xml
+
+      - name: Tests, production image (contents and QEMU)
+        # Runs even when the development tests failed: both results matter.
+        if: success() || failure()
+        run: |
+          .venv/bin/pytest --lg-env tests/env/qemu-prod.yaml tests/image tests/prod -v \
+            --lg-log=test-logs/prod --junitxml=test-logs/prod.xml
 
       - name: Upload test logs
         if: always()
