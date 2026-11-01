@@ -5,6 +5,10 @@ LICENSE = "MIT"
 
 inherit core-image
 
-IMAGE_INSTALL = "packagegroup-core-boot ${CORE_IMAGE_EXTRA_INSTALL}"
+IMAGE_INSTALL = " \
+    packagegroup-core-boot \
+    edgenoded \
+    ${CORE_IMAGE_EXTRA_INSTALL} \
+"
 IMAGE_FEATURES += "ssh-server-openssh"
 IMAGE_LINGUAS = ""

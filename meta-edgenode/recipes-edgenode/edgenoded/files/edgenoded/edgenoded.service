@@ -1,0 +1,41 @@
+[Unit]
+Description=Edge node daemon
+After=network.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/edgenoded
+Restart=on-failure
+RestartSec=2s
+
+# Liveness: systemd restarts the daemon if it stops sending keep-alives.
+WatchdogSec=30s
+
+# Runs as a transient, unprivileged user that owns nothing on disk.
+DynamicUser=yes
+
+# Sandboxing. `systemd-analyze security edgenoded` scores the result.
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=multi-user.target
