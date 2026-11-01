@@ -37,6 +37,30 @@ kas-container build kas/base.yml:kas/machine/qemuarm64.yml
 The first build compiles the toolchain and takes a few hours. Later builds
 reuse shared state and take minutes.
 
+## Test
+
+Integration tests use [pytest](https://pytest.org) with
+[labgrid](https://labgrid.readthedocs.io). labgrid boots the built image in
+QEMU, logs in over the serial console and forwards a host port to the
+daemon's HTTP endpoint. The tests only talk to labgrid drivers, so the same
+tests can run on real hardware with a different environment file.
+
+```sh
+sudo apt install qemu-system-arm python3-venv
+python3 -m venv .venv
+.venv/bin/pip install -r tests/requirements.txt
+
+export LG_IMAGES=$KAS_WORK_DIR/build/tmp/deploy/images/qemuarm64
+.venv/bin/pytest --lg-env tests/env/qemu.yaml tests/
+```
+
+What the tests check:
+
+- boot finishes with no failed units, on the `edgenode` distro, with systemd as init
+- no graphics stack slipped into the image
+- `edgenoded` is active, runs as an unprivileged user and has its watchdog armed
+- `/health` answers on the target and from the host, and reports the installed version
+
 ## Design notes
 
 - **Upstream repositories, not the combined poky repository.** Since Yocto

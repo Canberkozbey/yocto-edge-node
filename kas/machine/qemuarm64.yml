@@ -13,3 +13,8 @@ local_conf_header:
     # waits for a device that never appears, boot stays "starting" for 90 s
     # and ends "degraded". The tests use ttyAMA0 and SSH.
     SERIAL_CONSOLES = "115200;ttyAMA0"
+
+  qemuarm64-test-image: |
+    # Since wrynose, QEMU machines build ext4.zst. The labgrid tests boot an
+    # uncompressed ext4; runqemu also uses it when it is present.
+    IMAGE_FSTYPES:append = " ext4"

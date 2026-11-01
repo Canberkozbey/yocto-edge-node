@@ -8,5 +8,6 @@
 /.kas_shell_history
 
 # Python
+.venv/
 __pycache__/
 .pytest_cache/
