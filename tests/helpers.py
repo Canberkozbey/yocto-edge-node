@@ -80,19 +80,54 @@ def ssh_accepts_empty_password(port, user="root"):
             transport.close()
 
 
+def _license_dir(licenses_dir, link_name):
+    """The image's license directory, found through its link name.
+
+    oe-core links <link name> to the dated directory with an absolute path.
+    In a kas-container build that path exists only inside the container
+    (/work/...), so follow the link by name within licenses_dir instead.
+    """
+    link = licenses_dir / link_name
+    if link.is_symlink():
+        return licenses_dir / Path(os.readlink(link)).name
+    return link
+
+
 class Image:
     """A built image in the deploy directory, inspected without booting it."""
 
     def __init__(self, deploy_dir, name, machine=MACHINE):
         stem = f"{name}-{machine}.rootfs"
-        self.ext4 = Path(deploy_dir) / f"{stem}.ext4"
-        self.manifest = Path(deploy_dir) / f"{stem}.manifest"
+        deploy_dir = Path(deploy_dir)
+        self.ext4 = deploy_dir / f"{stem}.ext4"
+        self.manifest = deploy_dir / f"{stem}.manifest"
+        # tmp/deploy/images/<machine>/ -> tmp/deploy/licenses/<machine arch>/
+        licenses_dir = deploy_dir.parent.parent / "licenses" / machine.replace("-", "_")
+        self.license_manifest = _license_dir(licenses_dir, stem) / "license.manifest"
 
     @functools.cached_property
     def packages(self):
         """Installed package names, from the image manifest."""
         lines = self.manifest.read_text().splitlines()
         return {line.split()[0] for line in lines if line.strip()}
+
+    @functools.cached_property
+    def licenses(self):
+        """{package: license expression} from the image's license manifest.
+
+        For dual-licensed packages ("A | B") the build records the branch it
+        chose under the image's license policy.
+        """
+        licenses = {}
+        package = None
+        for line in self.license_manifest.read_text().splitlines():
+            key, _, value = line.partition(": ")
+            if key == "PACKAGE NAME":
+                package = value.strip()
+            elif key == "LICENSE" and package:
+                licenses[package] = value.strip()
+                package = None
+        return licenses
 
     def read_file(self, path):
         """Reads a file from the ext4 image with debugfs; no mount, no root."""

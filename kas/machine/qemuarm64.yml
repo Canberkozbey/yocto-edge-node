@@ -18,3 +18,9 @@ local_conf_header:
     # Since wrynose, QEMU machines build ext4.zst. The labgrid tests boot an
     # uncompressed ext4; runqemu also uses it when it is present.
     IMAGE_FSTYPES:append = " ext4"
+
+  qemuarm64-no-gnu-tar: |
+    # qemu.inc adds GNU tar (GPLv3) to every image for oe-core's testimage
+    # debug archives. The tests here use labgrid, and the production image
+    # allows no GPLv3 (docs/adr/0002). oe-core's no-gplv3.inc does the same.
+    MACHINE_ESSENTIAL_EXTRA_RDEPENDS:remove = "tar"

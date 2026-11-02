@@ -13,3 +13,8 @@ IMAGE_INSTALL = " \
 "
 IMAGE_FEATURES += "ssh-server-openssh"
 IMAGE_LINGUAS = ""
+
+# License policy for the product: nothing under (L/A)GPLv3. The build of
+# this image fails if such a package would be installed. Licenses with the
+# GCC runtime exception (libgcc) are not affected. See docs/adr/0002.
+INCOMPATIBLE_LICENSE = "GPL-3.0* LGPL-3.0* AGPL-3.0*"

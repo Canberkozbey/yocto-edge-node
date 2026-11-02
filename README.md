@@ -39,13 +39,15 @@ reuse shared state and take minutes.
 
 ## Images
 
-| Image | For | Access |
-| --- | --- | --- |
-| `edgenode-image` | Production | Root account locked, no password login; SSH root login by key only (OpenSSH default) |
-| `edgenode-image-dev` | Development | Root without a password on the console and over SSH; `gdbserver` and `strace` |
+| Image | For | Access | License policy |
+| --- | --- | --- | --- |
+| `edgenode-image` | Production | Root account locked, no password login; SSH root login by key only (OpenSSH default) | No (L/A)GPLv3; the build fails otherwise |
+| `edgenode-image-dev` | Development | Root without a password on the console and over SSH; `gdbserver` and `strace` | None (`gdbserver` is GPLv3) |
 
 The development image is the production image plus those extras
-(`require edgenode-image.bb`), so both share every other package.
+(`require edgenode-image.bb`), so both share every other package. Why the
+production image excludes GPLv3:
+[ADR 0002](docs/adr/0002-no-gplv3-in-production.md).
 
 ## Test
 
@@ -79,7 +81,7 @@ What the tests check:
 - production: root's console login asks for a password, SSH rejects root
   without one, root's password field is locked, sshd allows neither empty
   passwords nor root password logins, and no debug tools are installed
-- no graphics stack slipped into either image
+- no graphics stack slipped into either image, and nothing under (L/A)GPLv3 in the production image (from the license manifests)
 
 Each production check has a control in the development image that must give
 the opposite result, so a check that cannot tell the two apart fails.

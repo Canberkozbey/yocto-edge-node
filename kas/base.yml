@@ -56,3 +56,7 @@ local_conf_header:
     # Delete each recipe's work directory once it is done. Rebuilds come from
     # sstate, so this costs little and keeps tmp/ from filling the disk.
     INHERIT += "rm_work"
+
+    # Local and CI builds share SSTATE_DIR; keep the hash equivalence
+    # database next to it so they can reuse each other's results.
+    BB_HASHSERVE_DB_DIR = "${SSTATE_DIR}"
