@@ -80,19 +80,6 @@ def ssh_accepts_empty_password(host, port, user="root"):
             transport.close()
 
 
-def _license_dir(licenses_dir, link_name):
-    """The image's license directory, found through its link name.
-
-    oe-core links <link name> to the dated directory with an absolute path.
-    In a kas-container build that path exists only inside the container
-    (/work/...), so follow the link by name within licenses_dir instead.
-    """
-    link = licenses_dir / link_name
-    if link.is_symlink():
-        return licenses_dir / Path(os.readlink(link)).name
-    return link
-
-
 class Image:
     """A built image in the deploy directory, inspected without booting it."""
 
@@ -102,8 +89,25 @@ class Image:
         self.ext4 = deploy_dir / f"{stem}.ext4"
         self.manifest = deploy_dir / f"{stem}.manifest"
         # tmp/deploy/images/<machine>/ -> tmp/deploy/licenses/<machine arch>/
-        licenses_dir = deploy_dir.parent.parent / "licenses" / machine.replace("-", "_")
-        self.license_manifest = _license_dir(licenses_dir, stem) / "license.manifest"
+        self._licenses_dir = deploy_dir.parent.parent / "licenses" / machine.replace("-", "_")
+
+    @property
+    def license_manifest(self):
+        """The license manifest written together with this image's rootfs.
+
+        do_rootfs writes it to licenses/<arch>/<image name>/, where the image
+        name ends in the build's timestamp, and writes the package manifest
+        in the deploy directory under the same name. So the deployed
+        manifest's link gives the directory. oe-core's own link in the
+        licenses directory is not used: do_populate_lic_deploy makes it, and
+        when that task runs in a later build than do_rootfs, it points at a
+        new directory without license.manifest.
+        """
+        manifest = self.manifest
+        if manifest.is_symlink():
+            manifest = Path(os.readlink(manifest))
+        image_name = manifest.name.removesuffix(".manifest")
+        return self._licenses_dir / image_name / "license.manifest"
 
     @functools.cached_property
     def packages(self):
