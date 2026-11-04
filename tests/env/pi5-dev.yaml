@@ -1,0 +1,30 @@
+# labgrid environment: the development image on the Raspberry Pi 5 in this
+# lab, booted from its SD card. labgrid logs in as root on the serial console.
+#
+# Lab-specific values:
+# - the USB serial cable, by the physical USB port it is plugged into, so the
+#   name stays the same when other USB serial devices come and go;
+# - the address the router reserves for the Pi's MAC address.
+#
+# Power is switched by hand for now: labgrid asks on the terminal, so run
+# pytest with -s. The account running the tests needs access to the serial
+# port (group dialout on Ubuntu).
+
+targets:
+  main:
+    resources:
+      RawSerialPort:
+        port: /dev/serial/by-path/pci-0000:00:14.0-usb-0:14:1.0-port0
+        speed: 115200
+      NetworkService:
+        address: 192.168.1.164
+        username: root
+    drivers:
+      ManualPowerDriver: {}
+      SerialDriver: {}
+      ShellDriver:
+        prompt: 'root@[\w-]+:[^ ]+# '
+        login_prompt: ' login: '
+        username: root
+        login_timeout: 120
+      ShellStrategy: {}

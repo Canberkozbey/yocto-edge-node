@@ -27,12 +27,19 @@ def deploy_dir():
 
 
 @pytest.fixture(scope="session")
-def host_port(target, booted):
-    """Returns a function that forwards a guest TCP port to a free host port."""
+def service_address(target, booted):
+    """Returns a function that maps a target TCP port to the (host, port)
+    the test host connects to.
+
+    QEMU: the port is forwarded to a free port on 127.0.0.1.
+    Hardware: the target's own address, from the NetworkService resource.
+    """
     try:
         qemu = target.get_driver("QEMUDriver")
     except NoDriverFoundError:
-        pytest.skip("port forwarding is only implemented for QEMU so far")
+        address = target.get_resource("NetworkService").address
+        yield lambda port: (address, port)
+        return
 
     forwarded = []
 
@@ -40,7 +47,7 @@ def host_port(target, booted):
         port = helpers.free_tcp_port()
         qemu.add_port_forward("tcp", "127.0.0.1", port, "", guest_port)
         forwarded.append(port)
-        return port
+        return "127.0.0.1", port
 
     yield forward
     for port in forwarded:
@@ -48,14 +55,15 @@ def host_port(target, booted):
 
 
 @pytest.fixture(scope="session")
-def edgenoded_url(host_port):
+def edgenoded_url(service_address):
     """Base URL of edgenoded as reached from the test host."""
-    return f"http://127.0.0.1:{host_port(EDGENODED_PORT)}"
+    host, port = service_address(EDGENODED_PORT)
+    return f"http://{host}:{port}"
 
 
 @pytest.fixture(scope="session")
-def ssh_port(host_port):
-    """Host port that reaches the target's SSH server, once it answers."""
-    port = host_port(SSH_PORT)
-    helpers.wait_for_ssh_banner(port)
-    return port
+def ssh_address(service_address):
+    """(host, port) of the target's SSH server, once it answers."""
+    host, port = service_address(SSH_PORT)
+    helpers.wait_for_ssh_banner(host, port)
+    return host, port

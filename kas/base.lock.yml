@@ -1,0 +1,6 @@
+header:
+  version: 14
+overrides:
+  repos:
+    meta-raspberrypi:
+      commit: 919588393f41b48cb6c5d832aa35e58a19b6762d

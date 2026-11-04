@@ -42,28 +42,28 @@ def wait_for_http(url, timeout=120):
             time.sleep(2)
 
 
-def wait_for_ssh_banner(port, timeout=120):
-    """Waits until an SSH server answers on 127.0.0.1:port."""
+def wait_for_ssh_banner(host, port, timeout=120):
+    """Waits until an SSH server answers on host:port."""
     deadline = time.monotonic() + timeout
     while True:
         try:
-            with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+            with socket.create_connection((host, port), timeout=5) as s:
                 if s.recv(64).startswith(b"SSH-"):
                     return
         except OSError:
             pass
         if time.monotonic() > deadline:
-            raise TimeoutError(f"no SSH server on port {port}")
+            raise TimeoutError(f"no SSH server on {host}:{port}")
         time.sleep(2)
 
 
-def ssh_accepts_empty_password(port, user="root"):
+def ssh_accepts_empty_password(host, port, user="root"):
     """True if the SSH server logs `user` in with an empty password.
 
     Tries the "none" method (OpenSSH accepts it for empty passwords when
     PermitEmptyPasswords is set) and then an empty password.
     """
-    with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+    with socket.create_connection((host, port), timeout=10) as sock:
         transport = paramiko.Transport(sock)
         try:
             transport.start_client(timeout=10)
@@ -131,6 +131,10 @@ class Image:
 
     def read_file(self, path):
         """Reads a file from the ext4 image with debugfs; no mount, no root."""
+        if not self.ext4.is_file():
+            # debugfs reports a missing image on stderr but still exits 0,
+            # which would surface later as a confusing "not found" result.
+            raise FileNotFoundError(f"image not built: {self.ext4}")
         debugfs = shutil.which("debugfs") or "/usr/sbin/debugfs"
         result = subprocess.run(
             [debugfs, "-R", f"cat {path}", str(self.ext4)],

@@ -1,0 +1,53 @@
+# Raspberry Pi 5: the hardware target. Boots from an SD card; the root
+# filesystem is on the card's second partition (the BSP default).
+#
+#   kas-container build kas/base.yml:kas/machine/raspberrypi5.yml
+
+header:
+  version: 20
+
+machine: raspberrypi5
+
+repos:
+  # Raspberry Pi BSP layer. Its wrynose branch has no release tags, so the
+  # revision is pinned in kas/base.lock.yml with `kas lock` (ADR 0001).
+  meta-raspberrypi:
+    url: https://github.com/agherzan/meta-raspberrypi.git
+    branch: wrynose
+    layers:
+      .:
+
+local_conf_header:
+  raspberrypi5-console: |
+    # Serial console on the 40-pin header's UART (GPIO14/15, pins 8 and 10),
+    # where the USB serial cable is connected. The machine default, ttyAMA10,
+    # is the separate 3-pin debug connector. uart0_console points the
+    # serial0 alias at the header UART, which appears as ttyAMA0.
+    SERIAL_CONSOLES = "115200;ttyAMA0"
+    CMDLINE_SERIAL = "console=serial0,115200"
+    RPI_EXTRA_CONFIG = "dtparam=uart0_console"
+
+  raspberrypi5-no-efi-bootloaders: |
+    # The Pi's firmware loads the kernel directly; nothing boots through EFI.
+    # oe-core still builds GRUB and systemd-boot for every aarch64 wic image,
+    # and the license check counts deployed bootloaders as part of the image,
+    # so GRUB (GPL-3.0-only) breaks the production policy (docs/adr/0002).
+    WKS_FILE_DEPENDS:remove = "grub-efi systemd-boot"
+
+  raspberrypi5-image-types: |
+    # wic.bz2 and its bmap: the SD card image, written with bmaptool.
+    # ext4: the root filesystem alone, read by tests/image. The BSP default
+    # also builds tar.bz2 and ext3, which nothing here uses.
+    IMAGE_FSTYPES = "wic.bz2 wic.bmap ext4"
+
+  raspberrypi5-wired-only: |
+    # The node uses wired Ethernet only (docs/adr/0003). Leave out the Wi-Fi
+    # and Bluetooth firmware the machine recommends, and switch both radios
+    # off in the device tree.
+    MACHINE_EXTRA_RRECOMMENDS:remove = "\
+        linux-firmware-rpidistro-bcm43455 \
+        linux-firmware-rpidistro-bcm43456 \
+        bluez-firmware-rpidistro-bcm4345c0-hcd \
+        bluez-firmware-rpidistro-bcm4345c5-hcd \
+    "
+    RPI_EXTRA_CONFIG:append = "\ndtoverlay=disable-wifi-pi5\ndtoverlay=disable-bt-pi5"

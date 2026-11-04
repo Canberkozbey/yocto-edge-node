@@ -8,12 +8,17 @@ LOGIN_PROMPT = r"login: "
 
 @pytest.fixture(scope="session")
 def console(target):
-    """The QEMU serial console of the booted production image."""
-    qemu = target.get_driver("QEMUDriver")
-    qemu.on()
+    """The serial console of the freshly booted production image.
+
+    In QEMU one driver is both console and power switch. On hardware the
+    console is opened before power-cycling, so no boot output is missed.
+    """
+    console = target.get_driver("ConsoleProtocol")
+    power = target.get_driver("PowerProtocol")
+    power.cycle()
     # Full emulation of Arm on x86 boots slowly.
-    qemu.expect(LOGIN_PROMPT, timeout=300)
-    return qemu
+    console.expect(LOGIN_PROMPT, timeout=300)
+    return console
 
 
 @pytest.fixture(scope="session")

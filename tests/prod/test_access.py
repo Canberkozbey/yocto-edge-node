@@ -14,8 +14,8 @@ def test_root_console_login_asks_for_password(console):
     assert index == 0, "root got a shell without a password"
 
 
-def test_ssh_rejects_root_without_password(ssh_port):
-    assert not helpers.ssh_accepts_empty_password(ssh_port, user="root")
+def test_ssh_rejects_root_without_password(ssh_address):
+    assert not helpers.ssh_accepts_empty_password(*ssh_address, user="root")
 
 
 def test_health_answers_from_host(edgenoded_url):

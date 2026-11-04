@@ -4,7 +4,9 @@ A small but complete embedded Linux product setup: a secure, remotely
 updatable industrial edge node built with the Yocto Project, with builds and
 tests that run automatically, in QEMU and on real hardware.
 
-> **Status:** Stage 1 (layer, pinned build, QEMU) in progress.
+> **Status:** Stage 1 (layer, pinned build, QEMU, CI) done, as are the
+> dev/prod split and license policy from stage 4. Stage 2 (Raspberry Pi 5)
+> in progress.
 
 ## What is here
 
@@ -13,6 +15,7 @@ tests that run automatically, in QEMU and on real hardware.
 | `meta-edgenode/` | The layer: distro policy, image and the node's own recipes |
 | `meta-edgenode/dynamic-layers/` | Board-specific metadata, parsed only when that BSP layer is present |
 | `kas/base.yml` | Pinned upstream layers, distro, image and build policy |
+| `kas/base.lock.yml` | Pinned revisions of third-party layers (`kas lock`) |
 | `kas/machine/` | One file per target machine |
 | `tests/` | pytest integration tests against a running image |
 | `docs/adr/` | Architecture decision records |
@@ -37,6 +40,23 @@ kas-container build kas/base.yml:kas/machine/qemuarm64.yml
 The first build compiles the toolchain and takes a few hours. Later builds
 reuse shared state and take minutes.
 
+| Machine | kas file | Used for |
+| --- | --- | --- |
+| `qemuarm64` | `kas/machine/qemuarm64.yml` | CI on every push; boots without hardware |
+| `raspberrypi5` | `kas/machine/raspberrypi5.yml` | Hardware target: boots from an SD card, serial console on the 40-pin header (GPIO14/15) |
+
+For the Raspberry Pi 5, build with its machine file and write the SD card
+image with `bmaptool` (Ubuntu package `bmap-tools`). Check the card's device
+name with `lsblk` first: everything on it is overwritten.
+
+```sh
+kas-container build kas/base.yml:kas/machine/raspberrypi5.yml
+
+sudo bmaptool copy \
+  $KAS_WORK_DIR/build/tmp/deploy/images/raspberrypi5/edgenode-image-dev-raspberrypi5.rootfs.wic.bz2 \
+  /dev/sdX
+```
+
 ## Images
 
 | Image | For | Access | License policy |
@@ -54,8 +74,8 @@ production image excludes GPLv3:
 Integration tests use [pytest](https://pytest.org) with
 [labgrid](https://labgrid.readthedocs.io). labgrid boots the built image in
 QEMU, talks to it over the serial console and forwards host ports to the
-target's services. The tests only use labgrid drivers, so the same tests can
-run on real hardware with a different environment file.
+target's services. The tests only use labgrid drivers, so the same tests run
+on the Raspberry Pi 5 with a different environment file.
 
 | Directory | Runs against | How |
 | --- | --- | --- |
@@ -71,6 +91,23 @@ python3 -m venv .venv
 export LG_IMAGES=$KAS_WORK_DIR/build/tmp/deploy/images/qemuarm64
 .venv/bin/pytest --lg-env tests/env/qemu-dev.yaml tests/dev
 .venv/bin/pytest --lg-env tests/env/qemu-prod.yaml tests/image tests/prod
+
+# Image checks for another machine; nothing is booted
+LG_MACHINE=raspberrypi5 LG_IMAGES=$KAS_WORK_DIR/build/tmp/deploy/images/raspberrypi5 \
+  .venv/bin/pytest tests/image
+```
+
+On the Raspberry Pi 5, labgrid uses the serial console on the 40-pin header
+and reaches the services at the Pi's address, both set in
+`tests/env/pi5-*.yaml`. The SD card holds one image at a time: write the
+development image for `tests/dev` and the production image for `tests/prod`.
+Power is switched by hand for now: labgrid asks on the terminal, so pytest
+runs with `-s`, and nothing else (such as a terminal program) may hold the
+serial port.
+
+```sh
+.venv/bin/pytest -s --lg-env tests/env/pi5-dev.yaml tests/dev
+.venv/bin/pytest -s --lg-env tests/env/pi5-prod.yaml tests/prod
 ```
 
 What the tests check:
@@ -82,6 +119,9 @@ What the tests check:
   without one, root's password field is locked, sshd allows neither empty
   passwords nor root password logins, and no debug tools are installed
 - no graphics stack slipped into either image, and nothing under (L/A)GPLv3 in the production image (from the license manifests)
+- no Wi-Fi or Bluetooth firmware in either image; on the Raspberry Pi 5,
+  the console is on the header UART and both radios are off in `config.txt`,
+  and the running system has no wireless network or Bluetooth devices
 
 Each production check has a control in the development image that must give
 the opposite result, so a check that cannot tell the two apart fails.
@@ -108,6 +148,10 @@ Runner host requirements: Docker, kas (with `kas-container` on `PATH`),
   Details: [ADR 0001](docs/adr/0001-build-setup-with-kas.md).
 - **Own distro on top of Poky.** `edgenode.conf` keeps distro policy
   separate from the image and from machine configuration.
+- **Only what a function needs.** Nothing goes on the device without a
+  function that needs it; the node is wired, so Wi-Fi and Bluetooth stay
+  out and their radios off.
+  Details: [ADR 0003](docs/adr/0003-only-what-a-function-needs.md).
 
 ## Roadmap
 
