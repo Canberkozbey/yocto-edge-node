@@ -18,6 +18,9 @@ tests that run automatically, in QEMU and on real hardware.
 | `kas/base.lock.yml` | Pinned revisions of third-party layers (`kas lock`) |
 | `kas/machine/` | One file per target machine |
 | `tests/` | pytest integration tests against a running image |
+| `tools/netboot.py` | Serves a built image to the lab's Raspberry Pi 5 over the network |
+| `lab/` | This lab's configuration: addresses, dnsmasq and NFS export files |
+| `docs/lab.md` | The test lab: hardware, wiring, network boot, host setup |
 | `docs/adr/` | Architecture decision records |
 | `docs/migration-kirkstone-to-wrynose.md` | Notes from moving from Yocto 4.0 habits to 6.0 |
 
@@ -99,14 +102,17 @@ LG_MACHINE=raspberrypi5 LG_IMAGES=$KAS_WORK_DIR/build/tmp/deploy/images/raspberr
 
 On the Raspberry Pi 5, labgrid uses the serial console on the 40-pin header
 and reaches the services at the Pi's address, both set in
-`tests/env/pi5-*.yaml`. The SD card holds one image at a time: write the
-development image for `tests/dev` and the production image for `tests/prod`.
-Power is switched by hand for now: labgrid asks on the terminal, so pytest
-runs with `-s`, and nothing else (such as a terminal program) may hold the
-serial port.
+`tests/env/pi5-*.yaml`. The Pi boots the image the build host serves over
+the network, so no SD card has to be rewritten between runs
+([docs/lab.md](docs/lab.md)). Power is switched by hand for now: labgrid
+asks on the terminal, so pytest runs with `-s`, and nothing else (such as a
+terminal program) may hold the serial port.
 
 ```sh
+export LG_IMAGES=$KAS_WORK_DIR/build/tmp/deploy/images/raspberrypi5
+sudo tools/netboot.py deploy edgenode-image-dev --images "$LG_IMAGES"
 .venv/bin/pytest -s --lg-env tests/env/pi5-dev.yaml tests/dev
+sudo tools/netboot.py deploy edgenode-image --images "$LG_IMAGES"
 .venv/bin/pytest -s --lg-env tests/env/pi5-prod.yaml tests/prod
 ```
 

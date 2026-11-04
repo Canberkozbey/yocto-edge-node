@@ -1,0 +1,4 @@
+# Root filesystems for the lab's Raspberry Pi 5 (tools/netboot.py); install
+# as /etc/exports.d/edgenode.exports (docs/lab.md). Only the Pi's address,
+# read-write, and root on the Pi stays root (no_root_squash).
+/srv/edgenode/nfs 192.168.1.164(rw,sync,no_subtree_check,no_root_squash)

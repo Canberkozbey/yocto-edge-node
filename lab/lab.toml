@@ -1,0 +1,20 @@
+# This lab's addresses and paths, read by tools/netboot.py. The labgrid
+# environments (tests/env/pi5-*.yaml) hold the same Pi address and its serial
+# port. Setup: docs/lab.md.
+
+[netboot]
+# The build host serves the Pi's boot files (TFTP) and root filesystem (NFS).
+server = "192.168.1.173"
+tftp_root = "/srv/edgenode/tftp"
+nfs_root = "/srv/edgenode/nfs"
+
+[network]
+gateway = "192.168.1.1"
+netmask = "255.255.255.0"
+dns = "192.168.1.1"
+
+[pi5]
+mac = "98:fe:54:0e:f2:b6"
+# Reserved for the MAC address above on the router, so no other device gets
+# it. Network boot sets it statically (tools/netboot.py explains why).
+address = "192.168.1.164"
