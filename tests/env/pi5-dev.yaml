@@ -4,14 +4,18 @@
 # Lab-specific values:
 # - the USB serial cable, by the physical USB port it is plugged into, so the
 #   name stays the same when other USB serial devices come and go;
-# - the address the router reserves for the Pi's MAC address.
+# - the address the router reserves for the Pi's MAC address;
+# - the smart plug that switches the Pi's power, at its reserved address.
 #
-# Power is switched by hand for now: labgrid asks on the terminal, so run
-# pytest with -s. The account running the tests needs access to the serial
-# port (group dialout on Ubuntu).
+# The account running the tests needs access to the serial port (group
+# dialout on Ubuntu).
 
 targets:
   main:
+    # Hardware attached to this Pi; tests marked lg_feature("...") need it.
+    features:
+      - ads1115
+      - st7789
     resources:
       RawSerialPort:
         port: /dev/serial/by-path/pci-0000:00:14.0-usb-0:14:1.0-port0
@@ -19,8 +23,17 @@ targets:
       NetworkService:
         address: 192.168.1.164
         username: root
+      # The Pi's power supply is plugged into a Shelly Plug M Gen3
+      # (S3PL-30110EU), switched over its local HTTP API (Gen2+ API:
+      # labgrid's shelly_gen2 backend).
+      NetworkPowerPort:
+        model: shelly_gen2
+        host: http://192.168.1.114
+        index: 0
     drivers:
-      ManualPowerDriver: {}
+      # Off long enough for the supply's capacitors to drain.
+      NetworkPowerDriver:
+        delay: 5.0
       SerialDriver: {}
       ShellDriver:
         prompt: 'root@[\w-]+:[^ ]+# '

@@ -1,0 +1,13 @@
+# Init sequence for the 1.3 inch 240x240 IPS display with an ST7789
+# controller, for the kernel's panel-mipi-dbi driver. Before running it the
+# driver resets the controller (reset GPIO); afterwards it sets the drawing
+# window itself. Compiled to panel.bin by mkpanelbin.py at build time.
+
+command 0x11            # SLPOUT: leave sleep mode
+delay 120               # the controller needs 120 ms after SLPOUT
+
+command 0x3a 0x55       # COLMOD: 16 bits per pixel (RGB565)
+command 0x36 0x00       # MADCTL: default scan direction, RGB colour order
+command 0x21            # INVON: IPS panels need inversion for true colours
+command 0x13            # NORON: normal display mode
+command 0x29            # DISPON: display on

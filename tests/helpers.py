@@ -133,7 +133,7 @@ class Image:
                 package = None
         return licenses
 
-    def read_file(self, path):
+    def read_bytes(self, path):
         """Reads a file from the ext4 image with debugfs; no mount, no root."""
         if not self.ext4.is_file():
             # debugfs reports a missing image on stderr but still exits 0,
@@ -142,11 +142,15 @@ class Image:
         debugfs = shutil.which("debugfs") or "/usr/sbin/debugfs"
         result = subprocess.run(
             [debugfs, "-R", f"cat {path}", str(self.ext4)],
-            capture_output=True, text=True, check=True,
+            capture_output=True, check=True,
         )
-        if "File not found" in result.stderr:
+        if b"File not found" in result.stderr:
             raise FileNotFoundError(f"{path} not in {self.ext4.name}")
         return result.stdout
+
+    def read_file(self, path):
+        """Like read_bytes, for text files."""
+        return self.read_bytes(path).decode()
 
     def shadow_entry(self, user):
         for line in self.read_file("/etc/shadow").splitlines():

@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * ADS1115 ADC on the 40-pin header's I2C bus, for the edgenode-ads1115
+ * driver: dtoverlay=edgenode-ads1115[,addr=<address>][,full_scale_mv=<mV>]
+ * Wiring: docs/lab.md. Full scale defaults to 4096 mV, for inputs up to the
+ * Pi's 3.3 V.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2835";
+
+	fragment@0 {
+		target = <&i2c_arm>;
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+
+			adc: adc@48 {
+				compatible = "edgenode,ads1115";
+				reg = <0x48>;
+				edgenode,full-scale-mv = <4096>;
+			};
+		};
+	};
+
+	__overrides__ {
+		addr = <&adc>, "reg:0";
+		full_scale_mv = <&adc>, "edgenode,full-scale-mv:0";
+	};
+};

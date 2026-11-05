@@ -42,7 +42,7 @@ not a legal assessment.
 - A dependency change that pulls in, for example, `bash` or `coreutils`
   fails the build and has to be resolved: replace it, make it optional, or
   add a documented exception.
-- Enabling the policy surfaced these packages, all resolved without
+- Enabling the policy surfaced two packages, both resolved without
   exceptions:
   - `tar` (GPL-3.0-only): oe-core's `qemu.inc` adds GNU tar to every image
     on QEMU machines for testimage debug archives. This project tests with
@@ -52,8 +52,3 @@ not a legal assessment.
     console setup through `kbd-keymaps`. The device has no keyboard or local
     display, so the distro drops systemd's `vconsole` option and `kbd` with
     it.
-  - `grub-efi` (GPL-3.0-only), on the Raspberry Pi 5: oe-core builds GRUB
-    and systemd-boot for every aarch64 wic image, whatever its partition
-    layout, and the license check counts deployed bootloaders as part of the
-    image. The Pi's firmware loads the kernel directly, so
-    `kas/machine/raspberrypi5.yml` removes both from `WKS_FILE_DEPENDS`.

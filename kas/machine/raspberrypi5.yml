@@ -34,6 +34,24 @@ local_conf_header:
     # so GRUB (GPL-3.0-only) breaks the production policy (docs/adr/0002).
     WKS_FILE_DEPENDS:remove = "grub-efi systemd-boot"
 
+  raspberrypi5-display: |
+    # 1.3 inch 240x240 ST7789 display on SPI0 (docs/lab.md has the wiring),
+    # driven by the kernel's panel-mipi-dbi driver through Raspberry Pi's
+    # mipi-dbi-spi overlay. The module has no chip select, so SPI runs in
+    # mode 3 (cpha, cpol); MISO is not wired (write-only). The driver loads
+    # the panel's init sequence from /lib/firmware/panel.bin
+    # (edgenode-panel-firmware). Kernel modules: the panel driver, the RP1's
+    # SPI controller and the GPIO backlight; DRM comes with the first.
+    RPI_KERNEL_DEVICETREE_OVERLAYS:append = " overlays/mipi-dbi-spi.dtbo"
+    RPI_EXTRA_CONFIG:append = "\ndtoverlay=mipi-dbi-spi,spi0-0,cpha,cpol,write-only\ndtparam=width=240,height=240,reset-gpio=23,dc-gpio=24\ndtparam=backlight-gpio=18"
+    CORE_IMAGE_EXTRA_INSTALL:append = " edgenode-panel-firmware kernel-module-panel-mipi-dbi kernel-module-spi-dw-mmio kernel-module-gpio-backlight"
+    # The overlay's first compatible is "panel" (it names the firmware file),
+    # so the SPI device announces itself as "spi:panel", an alias the panel
+    # driver does not declare, and udev never loads it. A modprobe alias,
+    # shipped with the module's package, closes the gap.
+    KERNEL_MODULE_PROBECONF += "panel-mipi-dbi"
+    module_conf_panel-mipi-dbi = "alias spi:panel panel-mipi-dbi"
+
   raspberrypi5-image-types: |
     # wic.bz2 and its bmap: the SD card image, written with bmaptool; its boot
     # partition also supplies the network boot files (tools/netboot.py).
@@ -43,9 +61,11 @@ local_conf_header:
     IMAGE_FSTYPES = "wic.bz2 wic.bmap tar.zst ext4"
 
   raspberrypi5-wired-only: |
-    # The node uses wired Ethernet only (docs/adr/0003). Leave out the Wi-Fi
-    # and Bluetooth firmware the machine recommends, and switch both radios
-    # off in the device tree.
+    # The node uses wired Ethernet only (docs/adr/0003). Switch both radios
+    # off in the device tree. The machine recommends Wi-Fi and Bluetooth
+    # firmware through MACHINE_EXTRA_RRECOMMENDS; the images do not install
+    # that list (it comes with packagegroup-base, which they do not use), and
+    # the removal keeps the firmware out should anything pull it in.
     MACHINE_EXTRA_RRECOMMENDS:remove = "\
         linux-firmware-rpidistro-bcm43455 \
         linux-firmware-rpidistro-bcm43456 \
@@ -53,3 +73,21 @@ local_conf_header:
         bluez-firmware-rpidistro-bcm4345c5-hcd \
     "
     RPI_EXTRA_CONFIG:append = "\ndtoverlay=disable-wifi-pi5\ndtoverlay=disable-bt-pi5"
+
+  raspberrypi5-adc: |
+    # ADS1115 ADC on the header's I2C bus (GPIO2/3, pins 3 and 5) at address
+    # 0x48, wired as in docs/lab.md: a potentiometer on A0, and GND and 3.3 V
+    # on A1 and A2 as fixed references for tests/dev/test_adc.py.
+    #
+    # Driven by our own edgenode-ads1115 driver and overlay (full scale
+    # 4096 mV), validated against the mainline driver (docs/adr/0004).
+    RPI_EXTRA_CONFIG:append = "\ndtparam=i2c_arm=on\ndtoverlay=edgenode-ads1115"
+    IMAGE_BOOT_FILES:append = " devicetree/edgenode-ads1115.dtbo;overlays/edgenode-ads1115.dtbo"
+    # wic images depend on the deploy task of everything in WKS_FILE_DEPENDS.
+    WKS_FILE_DEPENDS:append = " edgenode-dt-overlays"
+    # The images install no kernel modules unless listed (docs/adr/0003):
+    # the header's I2C controller (DesignWare, in the RP1 chip) and the ADC
+    # driver; its dependencies (IIO core) come with it. The development
+    # image adds i2c-dev, the /dev/i2c-* interface that i2c-tools uses.
+    CORE_IMAGE_EXTRA_INSTALL:append = " kernel-module-i2c-designware-platform edgenode-ads1115"
+    IMAGE_INSTALL:append:pn-edgenode-image-dev = " kernel-module-i2c-dev"

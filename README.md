@@ -14,6 +14,7 @@ tests that run automatically, in QEMU and on real hardware.
 | --- | --- |
 | `meta-edgenode/` | The layer: distro policy, image and the node's own recipes |
 | `meta-edgenode/dynamic-layers/` | Board-specific metadata, parsed only when that BSP layer is present |
+| `meta-edgenode/recipes-kernel/edgenode-ads1115/` | The node's own kernel driver: ADS1115 ADC through IIO ([ADR 0004](docs/adr/0004-own-ads1115-driver.md)) |
 | `kas/base.yml` | Pinned upstream layers, distro, image and build policy |
 | `kas/base.lock.yml` | Pinned revisions of third-party layers (`kas lock`) |
 | `kas/machine/` | One file per target machine |
@@ -103,17 +104,16 @@ LG_MACHINE=raspberrypi5 LG_IMAGES=$KAS_WORK_DIR/build/tmp/deploy/images/raspberr
 On the Raspberry Pi 5, labgrid uses the serial console on the 40-pin header
 and reaches the services at the Pi's address, both set in
 `tests/env/pi5-*.yaml`. The Pi boots the image the build host serves over
-the network, so no SD card has to be rewritten between runs
-([docs/lab.md](docs/lab.md)). Power is switched by hand for now: labgrid
-asks on the terminal, so pytest runs with `-s`, and nothing else (such as a
-terminal program) may hold the serial port.
+the network, so no SD card has to be rewritten between runs, and labgrid
+power-cycles it through a smart plug ([docs/lab.md](docs/lab.md)). Nothing
+else (such as a terminal program) may hold the serial port during a run.
 
 ```sh
 export LG_IMAGES=$KAS_WORK_DIR/build/tmp/deploy/images/raspberrypi5
 sudo tools/netboot.py deploy edgenode-image-dev --images "$LG_IMAGES"
-.venv/bin/pytest -s --lg-env tests/env/pi5-dev.yaml tests/dev
+.venv/bin/pytest --lg-env tests/env/pi5-dev.yaml tests/dev
 sudo tools/netboot.py deploy edgenode-image --images "$LG_IMAGES"
-.venv/bin/pytest -s --lg-env tests/env/pi5-prod.yaml tests/prod
+.venv/bin/pytest --lg-env tests/env/pi5-prod.yaml tests/prod
 ```
 
 What the tests check:
@@ -128,6 +128,12 @@ What the tests check:
 - no Wi-Fi or Bluetooth firmware in either image; on the Raspberry Pi 5,
   the console is on the header UART and both radios are off in `config.txt`,
   and the running system has no wireless network or Bluetooth devices
+- on the Raspberry Pi 5, the ADS1115 ADC reads its fixed references (GND and
+  3.3 V) within tolerance, with the full scale set in the device tree; the
+  ST7789 display registers as a 240x240 DRM display, with its init sequence
+  compiled at build time, and its backlight follows its control;
+  hardware tests carry labgrid's `lg_feature` marker and are skipped where
+  the environment lacks that hardware
 
 Each production check has a control in the development image that must give
 the opposite result, so a check that cannot tell the two apart fails.
@@ -168,4 +174,6 @@ Runner host requirements: Docker, kas (with `kas-container` on `PATH`),
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE). The kernel driver and the device tree overlays
+are GPL-2.0-only, as code built into or loaded by the Linux kernel must be;
+their files say so in their SPDX headers.

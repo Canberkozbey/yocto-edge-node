@@ -21,9 +21,14 @@ example, installs Wi-Fi and Bluetooth firmware for every image.
   defaults is worth more than trimming build options that install nothing
   by themselves.
 - First application: the node uses **wired Ethernet only**. On the
-  Raspberry Pi 5, `kas/machine/raspberrypi5.yml` leaves out the Wi-Fi and
-  Bluetooth firmware the machine recommends, and switches both radios off
-  with the `disable-wifi-pi5` and `disable-bt-pi5` device tree overlays.
+  Raspberry Pi 5, `kas/machine/raspberrypi5.yml` switches both radios off
+  with the `disable-wifi-pi5` and `disable-bt-pi5` device tree overlays and
+  keeps the Wi-Fi and Bluetooth firmware the machine recommends out of the
+  images.
+- **Kernel modules are installed one by one.** The images do not install
+  the BSP's `kernel-modules` recommendation (it comes with
+  `packagegroup-base`, which they do not use), so a module is on the device
+  only when it is listed with its function, as the ADC's are.
 - `tests/image/test_artifacts.py` checks that no wireless firmware is
   installed and, on the Raspberry Pi 5, that both overlays are in
   `config.txt`.
@@ -42,5 +47,4 @@ example, installs Wi-Fi and Bluetooth firmware for every image.
 - Wi-Fi or Bluetooth can come back with a function that needs them: undo the
   firmware removal and the overlays, and record why in a new ADR.
 - Not yet applied, to revisit once the hardware set is final (ADC driver
-  and display): the BSP installs every kernel module (`kernel-modules`) and
-  enables the VC4 graphics overlay.
+  and display): the BSP enables the VC4 graphics overlay.

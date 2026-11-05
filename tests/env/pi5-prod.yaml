@@ -2,10 +2,14 @@
 # lab, booted from its SD card. Nobody can log in to this image, so there is
 # no ShellDriver: the tests use the serial console and the network only.
 #
-# Lab-specific values and manual power: see pi5-dev.yaml.
+# Lab-specific values: see pi5-dev.yaml.
 
 targets:
   main:
+    # Hardware attached to this Pi; tests marked lg_feature("...") need it.
+    features:
+      - ads1115
+      - st7789
     resources:
       RawSerialPort:
         port: /dev/serial/by-path/pci-0000:00:14.0-usb-0:14:1.0-port0
@@ -13,6 +17,15 @@ targets:
       NetworkService:
         address: 192.168.1.164
         username: root
+      # The Pi's power supply is plugged into a Shelly Plug M Gen3
+      # (S3PL-30110EU), switched over its local HTTP API (Gen2+ API:
+      # labgrid's shelly_gen2 backend).
+      NetworkPowerPort:
+        model: shelly_gen2
+        host: http://192.168.1.114
+        index: 0
     drivers:
-      ManualPowerDriver: {}
+      # Off long enough for the supply's capacitors to drain.
+      NetworkPowerDriver:
+        delay: 5.0
       SerialDriver: {}
