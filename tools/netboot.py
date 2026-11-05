@@ -143,7 +143,7 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     deploy_cmd = commands.add_parser("deploy", help="serve an image to the Pi")
     deploy_cmd.add_argument("image", choices=IMAGES)
-    deploy_cmd.add_argument("--images", type=Path, required=True,
+    deploy_cmd.add_argument("--images", required=True,
                             help="the build's deploy directory for raspberrypi5")
     commands.add_parser("remove", help="stop serving; the Pi boots from its SD card")
     args = parser.parse_args()
@@ -151,7 +151,12 @@ def main():
     with open(args.config, "rb") as f:
         config = tomllib.load(f)
     if args.command == "deploy":
-        deploy(config, args.image, args.images)
+        if not args.images.strip():
+            sys.exit("--images is empty: is LG_IMAGES set in this shell?")
+        images = Path(args.images)
+        if not images.is_dir():
+            sys.exit(f"--images {images} is not a directory")
+        deploy(config, args.image, images)
     else:
         remove(config)
 
