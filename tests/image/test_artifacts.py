@@ -67,6 +67,22 @@ def test_both_images_run_edgenoded(prod, dev):
         assert {"edgenoded", "edgenode-config"} <= image.packages
 
 
+def test_edgenoded_inputs_follow_the_machine(prod, dev):
+    # The Raspberry Pi 5 adds its ADC to the configuration (dynamic-layers);
+    # other machines have no analog inputs.
+    for image in (prod, dev):
+        active = [line.split("#", 1)[0].strip()
+                  for line in image.read_file("/etc/edgenoded.conf").splitlines()]
+        settings = dict(line.replace(" ", "").split("=", 1) for line in active if "=" in line)
+        if helpers.MACHINE == "raspberrypi5":
+            assert settings.get("adc_device") == "/sys/bus/i2c/devices/1-0048"
+            assert {k: v for k, v in settings.items() if k.startswith("channel.")} == {
+                "channel.potentiometer": "0", "channel.ground": "1", "channel.supply": "2",
+            }
+        else:
+            assert "adc_device" not in settings
+
+
 @pytest.mark.skipif(helpers.MACHINE != "raspberrypi5", reason="Raspberry Pi 5 boot files")
 def test_raspberrypi5_boot_files(deploy_dir):
     # The boot partition's files, as deployed for the SD card image.

@@ -1,6 +1,7 @@
 SUMMARY = "Edge node daemon"
-DESCRIPTION = "Serves the node's health over HTTP and reports readiness and \
-liveness to systemd. Later stages add sensor readings and MQTT publishing."
+DESCRIPTION = "Serves the node's health and analog sensor readings (from an \
+ADC through IIO) over HTTP, and reports readiness and liveness to systemd. \
+Later stages add the display and MQTT publishing."
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 

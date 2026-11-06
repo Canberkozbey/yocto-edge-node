@@ -14,6 +14,7 @@ tests that run automatically, in QEMU and on real hardware.
 | --- | --- |
 | `meta-edgenode/` | The layer: distro policy, image and the node's own recipes |
 | `meta-edgenode/dynamic-layers/` | Board-specific metadata, parsed only when that BSP layer is present |
+| `meta-edgenode/recipes-edgenode/` | `edgenoded`, the node's service (health and sensor readings over HTTP), and its configuration |
 | `meta-edgenode/recipes-kernel/edgenode-ads1115/` | The node's own kernel driver: ADS1115 ADC through IIO ([ADR 0004](docs/adr/0004-own-ads1115-driver.md)) |
 | `kas/base.yml` | Pinned upstream layers, distro, image and build policy |
 | `kas/base.lock.yml` | Pinned revisions of third-party layers (`kas lock`) |
@@ -121,6 +122,11 @@ What the tests check:
 - boot finishes with no failed units, on the `edgenode` distro, with systemd as init
 - `edgenoded` is active, runs as an unprivileged user and has its watchdog armed
 - `/health` answers on the target and from the host, and reports the installed version
+- `/sensors` reads each configured analog input through IIO and scales it
+  to millivolts, and reports an unreadable input without hiding the others
+  (on every machine, against a stand-in IIO device made of plain files);
+  the Raspberry Pi 5's configuration names its ADC and inputs, and there
+  the service's own `/sensors` reads the fixed references from the host
 - production: root's console login asks for a password, SSH rejects root
   without one, root's password field is locked, sshd allows neither empty
   passwords nor root password logins, and no debug tools are installed

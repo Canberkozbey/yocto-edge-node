@@ -2,15 +2,18 @@
 /*
  * edgenoded - edge node daemon
  *
- * Serves the node's health over HTTP and reports its state to systemd:
- * readiness, watchdog keep-alives and shutdown. Later stages add sensor
- * readings and MQTT publishing.
+ * Serves the node's health and analog sensor readings over HTTP, and reports
+ * its state to systemd: readiness, watchdog keep-alives and shutdown. The
+ * readings come from an ADC through the kernel's IIO interface. Later
+ * stages add the display and MQTT publishing.
  */
 
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <getopt.h>
+#include <glob.h>
 #include <limits.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -36,15 +39,28 @@
 #define DEFAULT_PORT     8080
 #define REQUEST_MAX      4096
 #define CLIENT_TIMEOUT_S 2
+#define MAX_CHANNELS     8
+#define CHANNEL_NAME_MAX 32
+#define MAX_IIO_CHANNEL  15
 
 /* journald reads a leading <N> as the syslog priority of the line. */
 #define PRI_ERR  "<3>"
 #define PRI_WARN "<4>"
 #define PRI_INFO "<6>"
 
+/* One analog input: a name for the API and the ADC's IIO channel index. */
+struct channel {
+	char name[CHANNEL_NAME_MAX];
+	unsigned int index;
+};
+
 struct config {
 	char bind[INET_ADDRSTRLEN];
 	unsigned short port;
+	/* sysfs directory of the ADC device, holding its iio:deviceN; "" if none */
+	char adc_device[PATH_MAX];
+	struct channel channels[MAX_CHANNELS];
+	unsigned int num_channels;
 };
 
 static volatile sig_atomic_t stop_requested;
@@ -154,6 +170,35 @@ static int parse_port(const char *text, unsigned short *port)
 }
 
 /*
+ * "channel.<name> = <index>": names become JSON keys, so they are limited
+ * to [a-z0-9_-]; indexes are the ADC's IIO channels.
+ */
+static int add_channel(struct config *cfg, const char *name, const char *value)
+{
+	unsigned long index;
+	size_t len = strlen(name);
+	char *end;
+
+	if (len == 0 || len >= CHANNEL_NAME_MAX ||
+	    strspn(name, "abcdefghijklmnopqrstuvwxyz0123456789_-") != len)
+		return -1;
+	errno = 0;
+	index = strtoul(value, &end, 10);
+	if (errno || end == value || *end != '\0' || index > MAX_IIO_CHANNEL)
+		return -1;
+	for (unsigned int i = 0; i < cfg->num_channels; i++)
+		if (strcmp(cfg->channels[i].name, name) == 0)
+			return -1;
+	if (cfg->num_channels == MAX_CHANNELS)
+		return -1;
+
+	snprintf(cfg->channels[cfg->num_channels].name, CHANNEL_NAME_MAX, "%s", name);
+	cfg->channels[cfg->num_channels].index = (unsigned int)index;
+	cfg->num_channels++;
+	return 0;
+}
+
+/*
  * Reads "key = value" lines; '#' starts a comment. A missing file is fine
  * unless it was named explicitly. Unknown keys are reported, not fatal, so
  * a newer config file still works with an older daemon.
@@ -216,6 +261,22 @@ static int load_config(const char *path, bool required, struct config *cfg)
 				break;
 			}
 			snprintf(cfg->bind, sizeof(cfg->bind), "%s", value);
+		} else if (strcmp(key, "adc_device") == 0) {
+			if (value[0] != '/' || strlen(value) >= sizeof(cfg->adc_device)) {
+				log_msg(PRI_ERR, "%s:%u: adc_device must be an absolute path",
+					path, lineno);
+				ret = -1;
+				break;
+			}
+			snprintf(cfg->adc_device, sizeof(cfg->adc_device), "%s", value);
+		} else if (strncmp(key, "channel.", 8) == 0) {
+			if (add_channel(cfg, key + 8, value) < 0) {
+				log_msg(PRI_ERR, "%s:%u: invalid or duplicate channel '%s = %s' "
+					"(names [a-z0-9_-], index 0-%d, at most %d channels)",
+					path, lineno, key + 8, value, MAX_IIO_CHANNEL, MAX_CHANNELS);
+				ret = -1;
+				break;
+			}
 		} else {
 			log_msg(PRI_WARN, "%s:%u: unknown key '%s', ignored",
 				path, lineno, key);
@@ -224,6 +285,126 @@ static int load_config(const char *path, bool required, struct config *cfg)
 
 	fclose(f);
 	return ret;
+}
+
+/*
+ * The IIO device directory under the ADC's sysfs directory. Its number
+ * (iio:deviceN) depends on probe order, so it is looked up on every read.
+ */
+static int find_iio_device(const char *adc_device, char *out, size_t len)
+{
+	char pattern[PATH_MAX + 16];
+	glob_t found;
+	int ret = -1;
+
+	snprintf(pattern, sizeof(pattern), "%s/iio:device*", adc_device);
+	if (glob(pattern, 0, NULL, &found) == 0 && found.gl_pathc == 1 &&
+	    strlen(found.gl_pathv[0]) < len) {
+		snprintf(out, len, "%s", found.gl_pathv[0]);
+		ret = 0;
+	}
+	globfree(&found);
+	return ret;
+}
+
+/* Reads in_voltage<index>_<attr> of an IIO device into buf, without the newline. */
+static int read_iio_attr(const char *iio_dir, unsigned int index, const char *attr,
+			 char *buf, size_t len)
+{
+	char path[PATH_MAX + 64];
+	ssize_t n;
+	int fd;
+
+	snprintf(path, sizeof(path), "%s/in_voltage%u_%s", iio_dir, index, attr);
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	/* For a raw value this read starts a conversion and waits for it. */
+	n = read(fd, buf, len - 1);
+	close(fd);
+	if (n <= 0)
+		return -1;
+	buf[n] = '\0';
+	buf[strcspn(buf, "\n")] = '\0';
+	return 0;
+}
+
+static int read_millivolts(const char *iio_dir, unsigned int index,
+			   long *raw, double *millivolts)
+{
+	char text[64];
+	double scale;
+	char *end;
+
+	if (read_iio_attr(iio_dir, index, "raw", text, sizeof(text)) < 0)
+		return -1;
+	errno = 0;
+	*raw = strtol(text, &end, 10);
+	if (errno || end == text || *end != '\0')
+		return -1;
+
+	/* IIO voltage scales are millivolts per count. */
+	if (read_iio_attr(iio_dir, index, "scale", text, sizeof(text)) < 0)
+		return -1;
+	errno = 0;
+	scale = strtod(text, &end);
+	if (errno || end == text || *end != '\0')
+		return -1;
+
+	*millivolts = (double)*raw * scale;
+	return 0;
+}
+
+/* Appends to buf, keeping it terminated; returns -1 once it is full. */
+__attribute__((format(printf, 4, 5)))
+static int append(char *buf, size_t size, size_t *used, const char *fmt, ...)
+{
+	va_list ap;
+	int n;
+
+	if (*used >= size)
+		return -1;
+	va_start(ap, fmt);
+	n = vsnprintf(buf + *used, size - *used, fmt, ap);
+	va_end(ap);
+	if (n < 0 || (size_t)n >= size - *used) {
+		*used = size;
+		return -1;
+	}
+	*used += (size_t)n;
+	return 0;
+}
+
+/*
+ * {"sensors":{"<name>":{"channel":N,"raw":R,"millivolts":M}, ...}}
+ * A channel that cannot be read reports "error" instead of a value.
+ */
+static int sensors_json(const struct config *cfg, char *buf, size_t size)
+{
+	char iio_dir[PATH_MAX];
+	bool have_device;
+	size_t used = 0;
+
+	have_device = cfg->adc_device[0] &&
+		find_iio_device(cfg->adc_device, iio_dir, sizeof(iio_dir)) == 0;
+
+	append(buf, size, &used, "{\"sensors\":{");
+	for (unsigned int i = 0; i < cfg->num_channels; i++) {
+		const struct channel *ch = &cfg->channels[i];
+		double millivolts;
+		long raw;
+
+		append(buf, size, &used, "%s\"%s\":{\"channel\":%u,",
+		       i ? "," : "", ch->name, ch->index);
+		if (!have_device)
+			append(buf, size, &used, "\"error\":\"no IIO device\"}");
+		else if (read_millivolts(iio_dir, ch->index, &raw, &millivolts) < 0)
+			append(buf, size, &used, "\"error\":\"read failed\"}");
+		else
+			append(buf, size, &used, "\"raw\":%ld,\"millivolts\":%.3f}",
+			       raw, millivolts);
+	}
+	return append(buf, size, &used, "}}\n");
 }
 
 static int listen_on(const struct config *cfg)
@@ -293,7 +474,8 @@ static void respond(int fd, int status, const char *reason,
 	send_all(fd, body, strlen(body));
 }
 
-static void route(int fd, char *request, long long start_ms)
+static void route(int fd, char *request, const struct config *cfg,
+		  long long start_ms)
 {
 	char method[8];
 	char path[256];
@@ -324,6 +506,14 @@ static void route(int fd, char *request, long long start_ms)
 		snprintf(body, sizeof(body), "{\"version\":\"%s\"}\n",
 			 EDGENODED_VERSION);
 		respond(fd, 200, "OK", NULL, body);
+	} else if (strcmp(path, "/sensors") == 0) {
+		char sensors[2048];
+
+		if (sensors_json(cfg, sensors, sizeof(sensors)) < 0)
+			respond(fd, 500, "Internal Server Error", NULL,
+				"{\"error\":\"response too large\"}\n");
+		else
+			respond(fd, 200, "OK", NULL, sensors);
 	} else {
 		respond(fd, 404, "Not Found", NULL,
 			"{\"error\":\"not found\"}\n");
@@ -335,7 +525,7 @@ static void route(int fd, char *request, long long start_ms)
  * for at most CLIENT_TIMEOUT_S per direction, well inside the watchdog
  * interval.
  */
-static void handle_client(int listen_fd, long long start_ms)
+static void handle_client(int listen_fd, const struct config *cfg, long long start_ms)
 {
 	struct timeval timeout = { .tv_sec = CLIENT_TIMEOUT_S };
 	char request[REQUEST_MAX + 1];
@@ -366,7 +556,7 @@ static void handle_client(int listen_fd, long long start_ms)
 			break;
 	}
 
-	route(fd, request, start_ms);
+	route(fd, request, cfg, start_ms);
 	close(fd);
 }
 
@@ -465,6 +655,9 @@ int main(int argc, char **argv)
 
 	log_msg(PRI_INFO, "edgenoded %s listening on %s:%u",
 		EDGENODED_VERSION, cfg.bind, cfg.port);
+	if (cfg.num_channels)
+		log_msg(PRI_INFO, "Reading %u analog input(s) from %s",
+			cfg.num_channels, cfg.adc_device[0] ? cfg.adc_device : "(no adc_device)");
 	snprintf(status, sizeof(status),
 		 "READY=1\nSTATUS=Serving health on %s:%u", cfg.bind, cfg.port);
 	notify(status);
@@ -492,7 +685,7 @@ int main(int argc, char **argv)
 			next_ping = now_ms() + watchdog_ms;
 		}
 		if (ready > 0 && (pfd.revents & POLLIN))
-			handle_client(pfd.fd, start_ms);
+			handle_client(pfd.fd, &cfg, start_ms);
 	}
 
 	notify("STOPPING=1");
