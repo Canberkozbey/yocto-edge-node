@@ -14,7 +14,7 @@ tests that run automatically, in QEMU and on real hardware.
 | --- | --- |
 | `meta-edgenode/` | The layer: distro policy, image and the node's own recipes |
 | `meta-edgenode/dynamic-layers/` | Board-specific metadata, parsed only when that BSP layer is present |
-| `meta-edgenode/recipes-edgenode/` | `edgenoded`, the node's service (health and sensor readings over HTTP, readings on the display), and its configuration |
+| `meta-edgenode/recipes-edgenode/` | `edgenoded`, the node's service (health and sensor readings over HTTP, readings on the display and over MQTT), and its configuration |
 | `meta-edgenode/recipes-kernel/edgenode-ads1115/` | The node's own kernel driver: ADS1115 ADC through IIO ([ADR 0004](docs/adr/0004-own-ads1115-driver.md)) |
 | `kas/base.yml` | Pinned upstream layers, distro, image and build policy |
 | `kas/base.lock.yml` | Pinned revisions of third-party layers (`kas lock`) |
@@ -89,7 +89,7 @@ on the Raspberry Pi 5 with a different environment file.
 | `tests/image` | both images, not booted | package manifests and files read from the ext4 images with `debugfs` |
 
 ```sh
-sudo apt install qemu-system-arm python3-venv
+sudo apt install qemu-system-arm python3-venv mosquitto
 python3 -m venv .venv
 .venv/bin/pip install -r tests/requirements.txt
 
@@ -132,6 +132,11 @@ What the tests check:
   changes and changes after a reading does; on the Raspberry Pi 5, the
   service's framebuffer is on the panel in its 240x240 mode, and the
   console gets the panel back when the service stops
+- the readings go out over MQTT to a broker the tests start on the host:
+  the `/sensors` JSON and an `online` status, both retained for late
+  subscribers; changes follow, the connection comes back after a broker
+  restart, and the status turns `offline` on a clean stop and, through the
+  last will, after `kill -9`; no image names a broker
 - production: root's console login asks for a password, SSH rejects root
   without one, root's password field is locked, sshd allows neither empty
   passwords nor root password logins, and no debug tools are installed
@@ -163,7 +168,8 @@ shared state caches between runs. Console logs and JUnit reports are kept
 as build artifacts.
 
 Runner host requirements: Docker, kas (with `kas-container` on `PATH`),
-`qemu-system-arm` and `python3-venv`.
+`qemu-system-arm`, `python3-venv` and `mosquitto` (the tests start their
+own broker; the system service can stay off).
 
 ## Design notes
 
@@ -182,11 +188,15 @@ Runner host requirements: Docker, kas (with `kas-container` on `PATH`),
 - **The display through KMS, without libdrm.** A dumb buffer and the
   kernel's mode-setting ioctls; a BSD-2-Clause bitmap font converted at
   build time. Details: [ADR 0006](docs/adr/0006-display-through-kms.md).
+- **MQTT with libmosquitto, no broker in the image.** Plain MQTT for now
+  (TLS comes with the keys in stage 4), retained readings and an
+  online/offline status with a last will.
+  Details: [ADR 0007](docs/adr/0007-mqtt-with-libmosquitto.md).
 
 ## Roadmap
 
 1. Layer, pinned build, QEMU boot, pytest, CI
-2. Raspberry Pi 5 as hardware-in-the-loop target, own kernel driver (ADS1115 ADC over I2C), SPI display
+2. Raspberry Pi 5 as hardware-in-the-loop target, own kernel driver (ADS1115 ADC over I2C), SPI display, MQTT publishing
 3. A/B updates with RAUC, read-only rootfs with dm-verity, update and rollback tests
 4. Dev/prod split, license policy, SBOM and CVE reports, signed releases
 

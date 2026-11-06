@@ -77,9 +77,11 @@ def edgenoded_settings(image):
 
 def test_edgenoded_config_follows_the_machine(prod, dev):
     # The Raspberry Pi 5 adds its ADC and display to the configuration
-    # (dynamic-layers); other machines have neither.
+    # (dynamic-layers); other machines have neither. No image names an MQTT
+    # broker: that is deployment configuration (docs/adr/0007).
     for image in (prod, dev):
         settings = edgenoded_settings(image)
+        assert "mqtt_broker" not in settings
         if helpers.MACHINE == "raspberrypi5":
             assert settings.get("adc_device") == "/sys/bus/i2c/devices/1-0048"
             assert {k: v for k, v in settings.items() if k.startswith("channel.")} == {
@@ -104,6 +106,14 @@ def test_device_access_only_for_a_display(prod, dev):
         else:
             with pytest.raises(FileNotFoundError):
                 image.read_file(DISPLAY_DROP_IN)
+
+
+def test_mqtt_client_library_only(prod, dev):
+    # edgenoded links libmosquitto; the broker and the command-line clients
+    # from the same recipe stay out (docs/adr/0003).
+    for image in (prod, dev):
+        assert "libmosquitto1" in image.packages
+        assert not {"mosquitto", "mosquitto-clients"} & image.packages
 
 
 def test_edgenoded_license_includes_its_font(prod):

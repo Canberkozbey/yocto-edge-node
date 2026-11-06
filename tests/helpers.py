@@ -80,8 +80,8 @@ def start_edgenoded(shell, work, name, lines):
                     f">{work}/{name}.log 2>&1 & echo $! > {work}/{name}.pid)")
 
 
-def stop_edgenoded(shell, work, name):
-    shell.run(f"kill $(cat {work}/{name}.pid) 2>/dev/null; true")
+def stop_edgenoded(shell, work, name, signal="TERM"):
+    shell.run(f"kill -{signal} $(cat {work}/{name}.pid) 2>/dev/null; true")
 
 
 def wait_for_ssh_banner(host, port, timeout=120):

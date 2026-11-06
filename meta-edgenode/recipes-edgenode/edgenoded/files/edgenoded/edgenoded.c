@@ -3,10 +3,11 @@
  * edgenoded - edge node daemon
  *
  * Serves the node's health and analog sensor readings over HTTP, shows the
- * readings on a display, and reports its state to systemd: readiness,
- * watchdog keep-alives and shutdown. The readings come from an ADC through
- * the kernel's IIO interface (sensors.c); the display is a DRM/KMS output
- * (display.c, screen.c). A later stage adds MQTT publishing.
+ * readings on a display, publishes them over MQTT, and reports its state to
+ * systemd: readiness, watchdog keep-alives and shutdown. The readings come
+ * from an ADC through the kernel's IIO interface (sensors.c); the display
+ * is a DRM/KMS output (display.c, screen.c); MQTT goes through libmosquitto
+ * (mqtt.c).
  */
 
 #define _GNU_SOURCE
@@ -30,6 +31,8 @@
 #include <unistd.h>
 
 #include "display.h"
+#include "log.h"
+#include "mqtt.h"
 #include "screen.h"
 #include "sensors.h"
 
@@ -43,11 +46,9 @@
 #define REQUEST_MAX      4096
 #define CLIENT_TIMEOUT_S 2
 #define SCREEN_PERIOD_MS 1000
-
-/* journald reads a leading <N> as the syslog priority of the line. */
-#define PRI_ERR  "<3>"
-#define PRI_WARN "<4>"
-#define PRI_INFO "<6>"
+#define DEFAULT_MQTT_PORT     1883
+#define DEFAULT_MQTT_INTERVAL 5
+#define MAX_MQTT_INTERVAL     3600
 
 struct config {
 	char bind[INET_ADDRSTRLEN];
@@ -58,21 +59,13 @@ struct config {
 	unsigned int num_channels;
 	/* DRM connector to show the readings on ("SPI-1"); "" for none */
 	char display_connector[32];
+	/* MQTT broker, host name or address; "" for none */
+	char mqtt_broker[256];
+	unsigned short mqtt_port;
+	unsigned int mqtt_interval_s;
 };
 
 static volatile sig_atomic_t stop_requested;
-
-__attribute__((format(printf, 2, 3)))
-static void log_msg(const char *priority, const char *fmt, ...)
-{
-	va_list ap;
-
-	fputs(priority, stderr);
-	va_start(ap, fmt);
-	vfprintf(stderr, fmt, ap);
-	va_end(ap);
-	fputc('\n', stderr);
-}
 
 static long long now_ms(void)
 {
@@ -277,6 +270,39 @@ static int load_config(const char *path, bool required, struct config *cfg)
 			}
 			snprintf(cfg->display_connector, sizeof(cfg->display_connector),
 				 "%s", value);
+		} else if (strcmp(key, "mqtt_broker") == 0) {
+			size_t len = strlen(value);
+
+			if (len == 0 || len >= sizeof(cfg->mqtt_broker) ||
+			    strspn(value, "abcdefghijklmnopqrstuvwxyz"
+					  "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-") != len) {
+				log_msg(PRI_ERR, "%s:%u: invalid mqtt_broker '%s' "
+					"(a host name or IPv4 address)", path, lineno, value);
+				ret = -1;
+				break;
+			}
+			snprintf(cfg->mqtt_broker, sizeof(cfg->mqtt_broker), "%s", value);
+		} else if (strcmp(key, "mqtt_port") == 0) {
+			if (parse_port(value, &cfg->mqtt_port) < 0) {
+				log_msg(PRI_ERR, "%s:%u: invalid mqtt_port '%s'",
+					path, lineno, value);
+				ret = -1;
+				break;
+			}
+		} else if (strcmp(key, "mqtt_interval") == 0) {
+			unsigned long seconds;
+			char *end;
+
+			errno = 0;
+			seconds = strtoul(value, &end, 10);
+			if (errno || end == value || *end != '\0' ||
+			    seconds == 0 || seconds > MAX_MQTT_INTERVAL) {
+				log_msg(PRI_ERR, "%s:%u: invalid mqtt_interval '%s' "
+					"(seconds, 1-%d)", path, lineno, value, MAX_MQTT_INTERVAL);
+				ret = -1;
+				break;
+			}
+			cfg->mqtt_interval_s = (unsigned int)seconds;
 		} else if (strncmp(key, "channel.", 8) == 0) {
 			if (add_channel(cfg, key + 8, value) < 0) {
 				log_msg(PRI_ERR, "%s:%u: invalid or duplicate channel '%s = %s' "
@@ -558,6 +584,20 @@ static void update_screen(struct screen_output *out, const struct config *cfg)
 	out->drawn = true;
 }
 
+/* The same JSON as /sensors, without its trailing newline. */
+static void publish_readings(struct mqtt *mqtt, const struct config *cfg)
+{
+	char payload[2048];
+	size_t len;
+
+	if (sensors_json(cfg, payload, sizeof(payload)) < 0)
+		return;
+	len = strlen(payload);
+	if (len && payload[len - 1] == '\n')
+		payload[--len] = '\0';
+	mqtt_publish_sensors(mqtt, payload, len);
+}
+
 static void on_signal(int sig)
 {
 	(void)sig;
@@ -596,11 +636,18 @@ int main(int argc, char **argv)
 		{ "help",    no_argument,       NULL, 'h' },
 		{ NULL, 0, NULL, 0 },
 	};
-	struct config cfg = { .bind = DEFAULT_BIND, .port = DEFAULT_PORT };
+	struct config cfg = {
+		.bind = DEFAULT_BIND,
+		.port = DEFAULT_PORT,
+		.mqtt_port = DEFAULT_MQTT_PORT,
+		.mqtt_interval_s = DEFAULT_MQTT_INTERVAL,
+	};
 	const char *config_path = DEFAULT_CONFIG;
 	bool config_required = false;
 	const char *port_arg = NULL;
 	struct screen_output screen = { .display = { .fd = -1 } };
+	struct mqtt *mqtt = NULL;
+	long long next_publish = 0;
 	bool show_screen;
 	struct pollfd pfd;
 	char status[128];
@@ -648,6 +695,17 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	pfd.events = POLLIN;
 
+	if (cfg.mqtt_broker[0]) {
+		char err[256];
+
+		mqtt = mqtt_start(cfg.mqtt_broker, cfg.mqtt_port, err, sizeof(err));
+		if (!mqtt) {
+			log_msg(PRI_ERR, "MQTT: %s", err);
+			close(pfd.fd);
+			return EXIT_FAILURE;
+		}
+	}
+
 	start_ms = now_ms();
 	watchdog_ms = watchdog_interval_ms();
 	if (watchdog_ms > 0)
@@ -663,6 +721,9 @@ int main(int argc, char **argv)
 	if (show_screen)
 		log_msg(PRI_INFO, "Showing readings on display connector %s",
 			cfg.display_connector);
+	if (mqtt)
+		log_msg(PRI_INFO, "Publishing readings every %u s to MQTT broker %s:%u",
+			cfg.mqtt_interval_s, cfg.mqtt_broker, cfg.mqtt_port);
 	snprintf(status, sizeof(status),
 		 "READY=1\nSTATUS=Serving health on %s:%u", cfg.bind, cfg.port);
 	notify(status);
@@ -679,6 +740,13 @@ int main(int argc, char **argv)
 		}
 		if (show_screen) {
 			long long left = screen.next_ms - now;
+			int wait = left > 0 ? (int)left : 0;
+
+			if (timeout < 0 || wait < timeout)
+				timeout = wait;
+		}
+		if (mqtt) {
+			long long left = next_publish - now;
 			int wait = left > 0 ? (int)left : 0;
 
 			if (timeout < 0 || wait < timeout)
@@ -703,12 +771,18 @@ int main(int argc, char **argv)
 			update_screen(&screen, &cfg);
 			screen.next_ms = now_ms() + SCREEN_PERIOD_MS;
 		}
+		if (mqtt && now_ms() >= next_publish) {
+			publish_readings(mqtt, &cfg);
+			next_publish = now_ms() + (long long)cfg.mqtt_interval_s * 1000;
+		}
 	}
 
 	notify("STOPPING=1");
 	log_msg(PRI_INFO, "Shutting down");
 	if (screen.open)
 		display_close(&screen.display);
+	if (mqtt)
+		mqtt_stop(mqtt);
 	close(pfd.fd);
 	return stop_requested ? EXIT_SUCCESS : EXIT_FAILURE;
 }

@@ -16,6 +16,13 @@ targets:
     features:
       - ads1115
       - st7789
+    # The MQTT broker the tests start on the build host
+    # (tests/dev/test_mqtt.py), on its LAN address and a fixed port, which
+    # a firewall on the host must let the Pi reach (docs/lab.md).
+    options:
+      mqtt_broker_listen: 192.168.1.173
+      mqtt_broker_from_target: 192.168.1.173
+      mqtt_broker_port: 18830
     resources:
       RawSerialPort:
         port: /dev/serial/by-path/pci-0000:00:14.0-usb-0:14:1.0-port0

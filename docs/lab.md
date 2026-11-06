@@ -133,6 +133,18 @@ dnsmasq as the host's DNS resolver, which would point the host at a DNS
 server that is turned off.
 `journalctl -u dnsmasq -f` shows each DHCP exchange and TFTP transfer.
 
+The MQTT tests start their own mosquitto broker on the build host's LAN
+address, port 18830 (`tests/env/pi5-dev.yaml`); only the binary is needed,
+not the system service that the package starts:
+
+```sh
+sudo apt install mosquitto
+sudo systemctl disable --now mosquitto
+```
+
+With a firewall on the host, let the Pi reach that port, for example with
+ufw: `sudo ufw allow from 192.168.1.164 to any port 18830 proto tcp`.
+
 ## CI access (once)
 
 The CI runner serves images through a root-owned copy of `tools/netboot.py`

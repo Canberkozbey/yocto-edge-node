@@ -46,6 +46,18 @@ repos:
     layers:
       meta-poky:
 
+  # OpenEmbedded's community layers, for libmosquitto (meta-networking,
+  # which needs meta-oe and meta-python). The wrynose branch has no release
+  # tags, so the revision is pinned in kas/base.lock.yml with `kas lock`
+  # (ADR 0001).
+  meta-openembedded:
+    url: https://github.com/openembedded/meta-openembedded.git
+    branch: wrynose
+    layers:
+      meta-oe:
+      meta-python:
+      meta-networking:
+
 local_conf_header:
   build-host: |
     # Tuned for the build host (i7-13700KF, 32 GB RAM). Memory is the limit,

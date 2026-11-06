@@ -10,6 +10,12 @@ targets:
     # vkms: the virtual KMS display module in the development image.
     features:
       - vkms
+    # The MQTT broker the tests start on this host (tests/dev/test_mqtt.py):
+    # it listens on loopback, which QEMU's user network shows the target as
+    # 10.0.2.2. The port is a free one, picked per run.
+    options:
+      mqtt_broker_listen: 127.0.0.1
+      mqtt_broker_from_target: 10.0.2.2
     drivers:
       QEMUDriver:
         qemu_bin: qemu
