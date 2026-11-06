@@ -1,18 +1,37 @@
-# Raspberry Pi 5: the hardware target. Boots from an SD card; the root
-# filesystem is on the card's second partition (the BSP default).
+# Raspberry Pi 5: the hardware target. Boots from an SD card with A/B slots
+# and updates through RAUC (docs/adr/0008); the lab also boots it over the
+# network (docs/lab.md).
 #
-#   kas-container build kas/base.yml:kas/machine/raspberrypi5.yml
+# The update bundles are signed, and the keys live outside the repository:
+# the build container gets their directory read-only (docs/updates.md).
+#
+#   kas-container --runtime-args "-v $HOME/yocto/keys:/keys:ro" \
+#       build kas/base.yml:kas/machine/raspberrypi5.yml
 
 header:
   version: 20
 
 machine: raspberrypi5
 
+# The images, and the update bundles made from them.
+target:
+  - edgenode-image
+  - edgenode-image-dev
+  - edgenode-bundle
+  - edgenode-bundle-dev
+
 repos:
   # Raspberry Pi BSP layer. Its wrynose branch has no release tags, so the
   # revision is pinned in kas/base.lock.yml with `kas lock` (ADR 0001).
   meta-raspberrypi:
     url: https://github.com/agherzan/meta-raspberrypi.git
+    branch: wrynose
+    layers:
+      .:
+
+  # RAUC, the update client, and the bundle class. Pinned the same way.
+  meta-rauc:
+    url: https://github.com/rauc/meta-rauc.git
     branch: wrynose
     layers:
       .:
@@ -53,12 +72,37 @@ local_conf_header:
     module_conf_panel-mipi-dbi = "alias spi:panel panel-mipi-dbi"
 
   raspberrypi5-image-types: |
-    # wic.bz2 and its bmap: the SD card image, written with bmaptool; its boot
-    # partition also supplies the network boot files (tools/netboot.py).
-    # tar.zst: the root filesystem served over NFS for network boot.
-    # ext4: the root filesystem alone, read by tests/image. The BSP default
+    # wic.bz2 and its bmap: the SD card image, written with bmaptool; its
+    # slot A boot partition also supplies the network boot files
+    # (tools/netboot.py). tar.zst: the root filesystem served over NFS for
+    # network boot. ext4: the root filesystem alone, which goes into slot A
+    # and the update bundles, and which tests/image reads. The BSP default
     # also builds tar.bz2 and ext3, which nothing here uses.
     IMAGE_FSTYPES = "wic.bz2 wic.bmap tar.zst ext4"
+
+  raspberrypi5-ab-updates: |
+    # A/B updates with RAUC (docs/adr/0008). The SD card has an autoboot
+    # partition, two boot slots, two root filesystem slots and a data
+    # partition; the firmware's autoboot.txt and tryboot flag choose the
+    # slot, through our RAUC backend (edgenode-boot).
+    DISTRO_FEATURES:append = " rauc"
+    WKS_FILE = "sdimage-raspberrypi5-ab.wks.in"
+    # The boot slot and autoboot partition images (edgenode-bootfs); slot A
+    # is a copy of the image's own ext4, so that is built first.
+    WKS_FILE_DEPENDS:append = " edgenode-bootfs"
+    IMAGE_TYPEDEP:wic:append = " ext4"
+    # Each slot boots its own root filesystem, through its own kernel
+    # command line (edgenode-bootfs), which config.txt picks by the partition
+    # the firmware booted from (bootloader EEPROM 2025-03-10 or later).
+    # cmdline.txt, the fallback, mounts slot A. A kernel panic reboots after
+    # 10 s, which ends a failed trial boot.
+    CMDLINE_ROOT_PARTITION = "/dev/mmcblk0p4"
+    CMDLINE:append:pn-rpi-cmdline = " panic=10"
+    RPI_EXTRA_CONFIG:append = "\n[boot_partition=2]\ncmdline=cmdline-A.txt\n[boot_partition=3]\ncmdline=cmdline-B.txt\n[all]"
+    # RAUC with its slot configuration and keyring, our backend and commit
+    # service, and the kernel modules that verity bundles are mounted with
+    # (dm-verity, squashfs; loop devices are built in).
+    CORE_IMAGE_EXTRA_INSTALL:append = " rauc edgenode-boot kernel-module-dm-verity kernel-module-squashfs"
 
   raspberrypi5-wired-only: |
     # The node uses wired Ethernet only (docs/adr/0003). Switch both radios

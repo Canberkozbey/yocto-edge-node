@@ -14,9 +14,9 @@ root-owned installed copy instead (/usr/local/sbin/edgenode-netboot, allowed
 by a sudo rule), which reads only the root-owned /etc/edgenode/lab.toml
 (docs/lab.md, docs/adr/0005).
 
-The boot files are copied out of the image's own boot partition, so a network
-boot uses exactly what the SD card would. Only cmdline.txt changes, to mount
-the root filesystem over NFS. After `remove` the Pi boots from its SD card
+The boot files are copied out of the image's own boot partition (slot A's),
+so a network boot uses exactly what the SD card would. Only cmdline.txt
+changes, to mount the root filesystem over NFS. After `remove` the Pi boots from its SD card
 again. Deploy while the Pi is off or about to be power-cycled: replacing the
 root filesystem under a running system breaks it.
 """
@@ -36,6 +36,7 @@ REPO_CONFIG = Path(__file__).resolve().parent.parent / "lab" / "lab.toml"
 SYSTEM_CONFIG = Path("/etc/edgenode/lab.toml")
 MACHINE = "raspberrypi5"
 IMAGES = ("edgenode-image", "edgenode-image-dev")
+BOOT_PARTITION_NAME = "bootA"
 
 
 def mac_directory(mac):
@@ -73,9 +74,17 @@ def replace_directory(path, parent):
     path.mkdir(parents=True)
 
 
+def boot_partition(table):
+    """The partition to take the boot files from: slot A's boot partition of
+    the A/B layout (GPT name bootA, docs/adr/0008), else the first one."""
+    partitions = table["partitions"]
+    named = [p for p in partitions if p.get("name") == BOOT_PARTITION_NAME]
+    return named[0] if named else partitions[0]
+
+
 def copy_boot_partition(wic_bz2, destination):
-    """Copies all files of the image's boot partition (its first partition,
-    FAT) into `destination`, without mounting anything."""
+    """Copies all files of the image's boot partition (FAT) into
+    `destination`, without mounting anything."""
     with tempfile.TemporaryDirectory() as tmp:
         wic = Path(tmp) / "image.wic"
         with bz2.open(wic_bz2) as src, open(wic, "wb") as dst:
@@ -83,7 +92,7 @@ def copy_boot_partition(wic_bz2, destination):
         table = json.loads(subprocess.run(
             ["sfdisk", "--json", str(wic)], capture_output=True, text=True, check=True,
         ).stdout)["partitiontable"]
-        offset = table["partitions"][0]["start"] * table.get("sectorsize", 512)
+        offset = boot_partition(table)["start"] * table.get("sectorsize", 512)
         subprocess.run(
             ["mcopy", "-s", "-p", "-n", "-i", f"{wic}@@{offset}", "::*", str(destination)],
             check=True, env={**os.environ, "MTOOLS_SKIP_CHECK": "1"},

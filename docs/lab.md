@@ -8,7 +8,7 @@ are in `lab/lab.toml` and `tests/env/pi5-*.yaml`.
 
 | Part | Role |
 | --- | --- |
-| Raspberry Pi 5 | The target. Boots over the network from the build host, or from its SD card when nothing is served. |
+| Raspberry Pi 5 | The target. Boots over the network from the build host, or from its SD card (A/B slots, docs/updates.md) when nothing is served. |
 | USB serial cable (PL2303, 3.3 V logic) | Console on the 40-pin header: GND to pin 6, the cable's RX to pin 8 (GPIO14, Pi TX), its TX to pin 10 (GPIO15, Pi RX). The cable's 5 V wire stays unconnected. |
 | Official 27 W power supply | Powers the Pi, through the smart plug. |
 | Shelly Plug M Gen3 (S3PL-30110EU) | Switches the Pi's power over its local HTTP API, so labgrid can power-cycle it. Device authentication off (labgrid's Shelly backend sends plain requests); after a power cut it restores its last state. |
@@ -101,9 +101,9 @@ systemctl start edgenoded
    bootloader boots the SD card instead.
 
 `tools/netboot.py` fills the TFTP directory and the NFS root from a build.
-The boot files are copied out of the image's own boot partition, so the
-network boot uses the same files as the SD card, apart from the kernel
-command line.
+The boot files are copied out of the image's own boot partition (slot A's),
+so the network boot uses the same files as the SD card, apart from the
+kernel command line.
 
 ```sh
 sudo tools/netboot.py deploy edgenode-image-dev --images "$LG_IMAGES"   # or edgenode-image
@@ -116,7 +116,7 @@ filesystem under a running system breaks it.
 ## Build host setup (once)
 
 ```sh
-sudo apt install dnsmasq nfs-kernel-server mtools zstd
+sudo apt install dnsmasq nfs-kernel-server mtools squashfs-tools zstd
 sudo mkdir -p /srv/edgenode/tftp /srv/edgenode/nfs /etc/exports.d
 sudo cp lab/dnsmasq.d/edgenode.conf /etc/dnsmasq.d/
 sudo cp lab/exports.d/edgenode.exports /etc/exports.d/
@@ -132,6 +132,13 @@ configuration turns DNS off (`port=0`), so the restart above succeeds.
 dnsmasq as the host's DNS resolver, which would point the host at a DNS
 server that is turned off.
 `journalctl -u dnsmasq -f` shows each DHCP exchange and TFTP transfer.
+mtools also reads the boot partitions for the image tests, and
+squashfs-tools reads the update bundles' manifests.
+
+The Raspberry Pi 5 build signs update bundles with keys kept outside the
+repository; create them once with `tools/make-dev-keys.sh`
+([docs/updates.md](updates.md)). CI looks for them in `~/yocto/keys` of the
+runner's account.
 
 The MQTT tests start their own mosquitto broker on the build host's LAN
 address, port 18830 (`tests/env/pi5-dev.yaml`); only the binary is needed,
@@ -166,6 +173,10 @@ directory: `sudo ./svc.sh stop && sudo ./svc.sh start`). After a change to
 `tools/netboot.py` or `lab/lab.toml`, repeat the matching `install` line;
 the CI job warns while the installed tool differs.
 
+The update tests (`tests/update`) call the same tool to stop the network
+boot (`netboot_command` in `tests/env/pi5-dev.yaml`), so the account that
+runs them, locally too, needs the `edgenode-lab` group.
+
 ## Bootloader settings (once)
 
 Take out the SD card, boot Raspberry Pi OS from the USB stick, log in over
@@ -186,3 +197,15 @@ from a directory named after its MAC address (`98-fe-54-0e-f2-b6/`). The
 settings take effect after a reboot. When the build host is off, the
 bootloader waits for a boot server before it moves on to the SD card
 (`DHCP_TIMEOUT`, about 45 seconds by default).
+
+The SD card's A/B slots need a bootloader from 2025-03-10 or later: it picks
+each slot's kernel command line by the partition it boots
+(`[boot_partition=N]` in `config.txt`, [ADR 0008](adr/0008-ab-updates-with-rauc-and-tryboot.md)).
+`tests/update` checks the version. To update, from the same Raspberry Pi OS:
+
+```sh
+sudo rpi-eeprom-update -a
+sudo reboot
+```
+
+The settings above survive the update.

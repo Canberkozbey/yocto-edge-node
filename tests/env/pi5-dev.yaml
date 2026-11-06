@@ -23,6 +23,9 @@ targets:
       mqtt_broker_listen: 192.168.1.173
       mqtt_broker_from_target: 192.168.1.173
       mqtt_broker_port: 18830
+      # Stops the network boot so the Pi boots its SD card (tests/update):
+      # the root-owned tool that the sudo rule allows (docs/lab.md).
+      netboot_command: sudo -n /usr/local/sbin/edgenode-netboot
     resources:
       RawSerialPort:
         port: /dev/serial/by-path/pci-0000:00:14.0-usb-0:14:1.0-port0

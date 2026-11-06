@@ -4,16 +4,17 @@ A small but complete embedded Linux product setup: a secure, remotely
 updatable industrial edge node built with the Yocto Project, with builds and
 tests that run automatically, in QEMU and on real hardware.
 
-> **Status:** Stage 1 (layer, pinned build, QEMU, CI) done, as are the
-> dev/prod split and license policy from stage 4. Stage 2 (Raspberry Pi 5)
-> in progress.
+> **Status:** Stages 1 (layer, pinned build, QEMU, CI) and 2 (Raspberry Pi 5
+> hardware-in-the-loop) done, as are the dev/prod split and license policy
+> from stage 4. Stage 3 (A/B updates) in progress: RAUC with A/B slots and
+> rollback is in; dm-verity is next.
 
 ## What is here
 
 | Path | Purpose |
 | --- | --- |
 | `meta-edgenode/` | The layer: distro policy, image and the node's own recipes |
-| `meta-edgenode/dynamic-layers/` | Board-specific metadata, parsed only when that BSP layer is present |
+| `meta-edgenode/dynamic-layers/` | Metadata parsed only when another layer is present: the Raspberry Pi BSP, or meta-rauc for the update system |
 | `meta-edgenode/recipes-edgenode/` | `edgenoded`, the node's service (health and sensor readings over HTTP, readings on the display and over MQTT), and its configuration |
 | `meta-edgenode/recipes-kernel/edgenode-ads1115/` | The node's own kernel driver: ADS1115 ADC through IIO ([ADR 0004](docs/adr/0004-own-ads1115-driver.md)) |
 | `kas/base.yml` | Pinned upstream layers, distro, image and build policy |
@@ -21,8 +22,10 @@ tests that run automatically, in QEMU and on real hardware.
 | `kas/machine/` | One file per target machine |
 | `tests/` | pytest integration tests against a running image |
 | `tools/netboot.py` | Serves a built image to the lab's Raspberry Pi 5 over the network |
+| `tools/make-dev-keys.sh` | Creates the development keys that sign update bundles, outside the repository |
 | `lab/` | This lab's configuration: addresses, dnsmasq and NFS export files |
 | `docs/lab.md` | The test lab: hardware, wiring, network boot, host setup |
+| `docs/updates.md` | Updates: signing keys, SD card, installing a bundle |
 | `docs/adr/` | Architecture decision records |
 | `docs/migration-kirkstone-to-wrynose.md` | Notes from moving from Yocto 4.0 habits to 6.0 |
 
@@ -48,14 +51,19 @@ reuse shared state and take minutes.
 | Machine | kas file | Used for |
 | --- | --- | --- |
 | `qemuarm64` | `kas/machine/qemuarm64.yml` | CI on every push; boots without hardware |
-| `raspberrypi5` | `kas/machine/raspberrypi5.yml` | Hardware target: boots from an SD card, serial console on the 40-pin header (GPIO14/15) |
+| `raspberrypi5` | `kas/machine/raspberrypi5.yml` | Hardware target: boots from an SD card with A/B slots and updates through RAUC; serial console on the 40-pin header (GPIO14/15) |
 
-For the Raspberry Pi 5, build with its machine file and write the SD card
-image with `bmaptool` (Ubuntu package `bmap-tools`). Check the card's device
-name with `lsblk` first: everything on it is overwritten.
+The Raspberry Pi 5 build also makes signed update bundles. Their keys stay
+outside the repository: create development keys once with
+`tools/make-dev-keys.sh` and give the build container their directory
+([docs/updates.md](docs/updates.md)). Write the SD card image with
+`bmaptool` (Ubuntu package `bmap-tools`). Check the card's device name with
+`lsblk` first: everything on it is overwritten.
 
 ```sh
-kas-container build kas/base.yml:kas/machine/raspberrypi5.yml
+tools/make-dev-keys.sh    # once: ~/yocto/keys, and the CA key in ~/yocto/keys-ca
+kas-container --runtime-args "-v $HOME/yocto/keys:/keys:ro" \
+  build kas/base.yml:kas/machine/raspberrypi5.yml
 
 sudo bmaptool copy \
   $KAS_WORK_DIR/build/tmp/deploy/images/raspberrypi5/edgenode-image-dev-raspberrypi5.rootfs.wic.bz2 \
@@ -86,7 +94,8 @@ on the Raspberry Pi 5 with a different environment file.
 | --- | --- | --- |
 | `tests/dev` | development image | logs in as root on the console |
 | `tests/prod` | production image | no login possible: console prompts and forwarded ports only |
-| `tests/image` | both images, not booted | package manifests and files read from the ext4 images with `debugfs` |
+| `tests/image` | both images, not booted | package manifests and files read from the ext4 images with `debugfs`; on the Raspberry Pi 5 also the SD card layout, boot partitions and update bundles |
+| `tests/update` | development image on the Raspberry Pi 5's SD card | writes the card, then installs updates, rolls back and cuts the power |
 
 ```sh
 sudo apt install qemu-system-arm python3-venv mosquitto
@@ -115,6 +124,10 @@ sudo tools/netboot.py deploy edgenode-image-dev --images "$LG_IMAGES"
 .venv/bin/pytest --lg-env tests/env/pi5-dev.yaml tests/dev
 sudo tools/netboot.py deploy edgenode-image --images "$LG_IMAGES"
 .venv/bin/pytest --lg-env tests/env/pi5-prod.yaml tests/prod
+
+# A/B updates: rewrites the SD card, starting from network boot
+sudo tools/netboot.py deploy edgenode-image-dev --images "$LG_IMAGES"
+.venv/bin/pytest --lg-env tests/env/pi5-dev.yaml tests/update
 ```
 
 What the tests check:
@@ -150,6 +163,13 @@ What the tests check:
   compiled at build time, and its backlight follows its control;
   hardware tests carry labgrid's `lg_feature` marker and are skipped where
   the environment lacks that hardware
+- on the Raspberry Pi 5, the SD card image has the A/B layout, each boot
+  slot names its own root filesystem, and each update bundle carries this
+  build's slots byte for byte; on the board, an update boots on trial and
+  is committed, a power cut before the trial boot or during installation
+  keeps the running slot, a release whose service fails rolls itself back,
+  bundles with a broken signature or payload are rejected, and the hardware
+  watchdog resets a hung kernel
 
 Each production check has a control in the development image that must give
 the opposite result, so a check that cannot tell the two apart fails.
@@ -160,16 +180,19 @@ the opposite result, so a check that cannot tell the two apart fails.
 first builds both images for QEMU and runs the tests there, on every push to
 `main` and on pull requests. The second, for pushes and manual runs only,
 builds for the Raspberry Pi 5, serves each image to the lab's board over the
-network and runs the same tests on it; how CI gets the privileges that
-takes is in [ADR 0005](docs/adr/0005-ci-on-lab-hardware.md). Both run on
+network and runs the same tests on it, then writes its SD card and runs the
+update tests; how CI gets the privileges that takes is in
+[ADR 0005](docs/adr/0005-ci-on-lab-hardware.md). Both run on
 a self-hosted runner with the label `yocto`: a Yocto build needs more memory
 and disk than hosted runners offer, and the runner keeps the download and
 shared state caches between runs. Console logs and JUnit reports are kept
 as build artifacts.
 
 Runner host requirements: Docker, kas (with `kas-container` on `PATH`),
-`qemu-system-arm`, `python3-venv` and `mosquitto` (the tests start their
-own broker; the system service can stay off).
+`qemu-system-arm`, `python3-venv`, `mosquitto` (the tests start their
+own broker; the system service can stay off), `mtools` and
+`squashfs-tools`, and the update signing keys in `~/yocto/keys`
+([docs/updates.md](docs/updates.md)).
 
 ## Design notes
 
@@ -192,6 +215,11 @@ own broker; the system service can stay off).
   (TLS comes with the keys in stage 4), retained readings and an
   online/offline status with a last will.
   Details: [ADR 0007](docs/adr/0007-mqtt-with-libmosquitto.md).
+- **A/B updates with RAUC, slots chosen by the Pi's own firmware.** No
+  U-Boot: `autoboot.txt` and the firmware's one-shot tryboot flag, driven
+  by our own RAUC backend; a health check commits a new slot or rolls it
+  back; signed verity bundles, keys outside the repository.
+  Details: [ADR 0008](docs/adr/0008-ab-updates-with-rauc-and-tryboot.md).
 
 ## Roadmap
 

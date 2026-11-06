@@ -1,5 +1,6 @@
 # Build the images and run the integration tests: in QEMU on every push and
-# pull request, then on the lab's Raspberry Pi 5 for pushes and manual runs.
+# pull request, then on the lab's Raspberry Pi 5 for pushes and manual runs,
+# A/B updates on its SD card included.
 #
 # Runs on a self-hosted runner: a Yocto build needs more memory and disk
 # than GitHub's hosted runners offer, and the runner keeps the download and
@@ -37,9 +38,11 @@ jobs:
         run: |
           # Caches are shared with local development builds; the CI build
           # directory is separate so CI never touches a developer's tmp/.
-          echo "DL_DIR=${DL_DIR:-$HOME/yocto/cache/downloads}" >> "$GITHUB_ENV"
-          echo "SSTATE_DIR=${SSTATE_DIR:-$HOME/yocto/cache/sstate}" >> "$GITHUB_ENV"
-          echo "KAS_WORK_DIR=$HOME/yocto/ci-work" >> "$GITHUB_ENV"
+          {
+            echo "DL_DIR=${DL_DIR:-$HOME/yocto/cache/downloads}"
+            echo "SSTATE_DIR=${SSTATE_DIR:-$HOME/yocto/cache/sstate}"
+            echo "KAS_WORK_DIR=$HOME/yocto/ci-work"
+          } >> "$GITHUB_ENV"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Build
@@ -99,10 +102,24 @@ jobs:
 
       - name: Set up work and cache directories
         run: |
-          echo "DL_DIR=${DL_DIR:-$HOME/yocto/cache/downloads}" >> "$GITHUB_ENV"
-          echo "SSTATE_DIR=${SSTATE_DIR:-$HOME/yocto/cache/sstate}" >> "$GITHUB_ENV"
-          echo "KAS_WORK_DIR=$HOME/yocto/ci-work" >> "$GITHUB_ENV"
+          {
+            echo "DL_DIR=${DL_DIR:-$HOME/yocto/cache/downloads}"
+            echo "SSTATE_DIR=${SSTATE_DIR:-$HOME/yocto/cache/sstate}"
+            echo "KAS_WORK_DIR=$HOME/yocto/ci-work"
+            echo "EDGENODE_KEYS=$HOME/yocto/keys"
+          } >> "$GITHUB_ENV"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Check the update signing keys
+        # Development keys on the runner's host, outside the repository
+        # (docs/updates.md); the build container gets them read-only.
+        run: |
+          for file in ca.cert.pem dev.cert.pem dev.key.pem; do
+            if [ ! -f "$EDGENODE_KEYS/$file" ]; then
+              echo "::error::$EDGENODE_KEYS/$file missing; create the keys with tools/make-dev-keys.sh (docs/updates.md)"
+              exit 1
+            fi
+          done
 
       - name: Check the installed network boot tool
         # CI serves images through a root-owned copy of tools/netboot.py, so a
@@ -115,7 +132,7 @@ jobs:
         id: build
         run: |
           mkdir -p "$DL_DIR" "$SSTATE_DIR" "$KAS_WORK_DIR"
-          kas-container build "$KAS_FILES"
+          kas-container --runtime-args "-v $EDGENODE_KEYS:/keys:ro" build "$KAS_FILES"
 
       - name: Install test dependencies
         run: |
@@ -145,6 +162,17 @@ jobs:
           sudo -n /usr/local/sbin/edgenode-netboot deploy edgenode-image --images "$LG_IMAGES"
           .venv/bin/pytest --lg-env tests/env/pi5-prod.yaml tests/prod -v \
             --lg-log=test-logs/pi5-prod --junitxml=test-logs/pi5-prod.xml
+
+      - name: Tests, A/B updates (hardware, SD card)
+        # From the development image booted over the network, the tests
+        # write the SD card, stop the network boot and boot the card; then
+        # update, roll back and cut the power (tests/update). Last, as it
+        # leaves the Pi booting from its card.
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          sudo -n /usr/local/sbin/edgenode-netboot deploy edgenode-image-dev --images "$LG_IMAGES"
+          .venv/bin/pytest --lg-env tests/env/pi5-dev.yaml tests/update -v \
+            --lg-log=test-logs/pi5-update --junitxml=test-logs/pi5-update.xml
 
       - name: Upload test logs
         if: always()

@@ -19,3 +19,6 @@ __pycache__/
 /meta-edgenode/recipes-edgenode/edgenoded/files/edgenoded/*.o
 /meta-edgenode/recipes-edgenode/edgenoded/files/edgenoded/fonts.c
 /meta-edgenode/recipes-edgenode/edgenoded/files/edgenoded/edgenoded
+
+# Standalone build of edgenode-boot (its Makefile)
+/meta-edgenode/dynamic-layers/rauc/recipes-bsp/edgenode-boot/files/edgenode-boot/edgenode-boot

@@ -1,14 +1,20 @@
 """Helpers shared by the test directories (dev, prod, image)."""
 
+import bz2
 import functools
+import hashlib
 import os
 import shlex
 import shutil
 import socket
+import struct
 import subprocess
 import time
 import urllib.error
 import urllib.request
+import uuid
+import xml.etree.ElementTree as ElementTree
+from dataclasses import dataclass
 from pathlib import Path
 
 import paramiko
@@ -210,3 +216,179 @@ class Image:
                 key, _, value = line.partition(" ")
                 settings.setdefault(key.lower(), value.strip())
         return settings
+
+
+@dataclass
+class Partition:
+    number: int
+    name: str
+    type: str
+    start: int  # bytes
+    size: int  # bytes
+
+
+def gpt_partitions(wic_bz2):
+    """The partitions of a compressed disk image's primary GPT, read without
+    decompressing more than its first sectors."""
+    with bz2.open(wic_bz2) as f:
+        head = f.read(64 * 1024)
+    header = head[512:1024]
+    if header[:8] != b"EFI PART":
+        raise ValueError(f"{wic_bz2.name}: no GPT")
+    entries_lba, count, entry_size = struct.unpack_from("<QII", header, 72)
+    partitions = []
+    for i in range(count):
+        entry = head[entries_lba * 512 + i * entry_size:][:entry_size]
+        type_guid = uuid.UUID(bytes_le=entry[:16])
+        if type_guid.int == 0:
+            continue
+        first, last = struct.unpack_from("<QQ", entry, 32)
+        name = entry[56:128].decode("utf-16-le").rstrip("\0")
+        partitions.append(Partition(i + 1, name, str(type_guid).upper(),
+                                    first * 512, (last - first + 1) * 512))
+    return partitions
+
+
+def fat_read(image, path):
+    """Reads a file from a FAT filesystem image with mtools; no mount."""
+    return subprocess.run(
+        ["mtype", "-i", str(image), f"::{path}"], capture_output=True, check=True,
+        env={**os.environ, "MTOOLS_SKIP_CHECK": "1"},
+    ).stdout
+
+
+def fat_files(image):
+    """Paths of all files in a FAT filesystem image."""
+    out = subprocess.run(
+        ["mdir", "-/", "-b", "-i", str(image), "::"], capture_output=True, check=True,
+        text=True, env={**os.environ, "MTOOLS_SKIP_CHECK": "1"},
+    ).stdout
+    return {line.removeprefix("::/") for line in out.splitlines()
+            if line and not line.endswith("/")}
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def bundle_manifest(bundle):
+    """{section: {key: value}} of a RAUC bundle's manifest, read from its
+    squashfs with unsquashfs (squashfs-tools)."""
+    text = subprocess.run(
+        ["unsquashfs", "-cat", str(bundle), "manifest.raucm"],
+        capture_output=True, check=True, text=True,
+    ).stdout
+    sections, current = {}, None
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            current = sections.setdefault(line[1:-1], {})
+        elif "=" in line and current is not None:
+            key, _, value = line.partition("=")
+            current[key] = value
+    return sections
+
+
+def bmap_ranges(bmap):
+    """(checksum type, [(offset, length, checksum)]) of a bmaptool block
+    map: the ranges of an image that hold data; the rest is unused. The last
+    range ends with the image, which need not be a whole number of blocks."""
+    root = ElementTree.parse(bmap).getroot()
+    block_size = int(root.findtext("BlockSize"))
+    image_size = int(root.findtext("ImageSize"))
+    checksum_type = (root.findtext("ChecksumType") or "sha1").strip()
+    ranges = []
+    for element in root.iter("Range"):
+        first, _, last = element.text.strip().partition("-")
+        last = last or first
+        offset = int(first) * block_size
+        length = min((int(last) - int(first) + 1) * block_size, image_size - offset)
+        ranges.append((offset, length, element.get("chksum")))
+    return checksum_type, ranges
+
+
+class TargetSSH:
+    """SSH to the development image as root, which logs in without a
+    password; for commands that stream data in or out, which the serial
+    console cannot carry."""
+
+    def __init__(self, host, port=22):
+        self._sock = socket.create_connection((host, port), timeout=10)
+        self._transport = paramiko.Transport(self._sock)
+        self._transport.start_client(timeout=10)
+        try:
+            self._transport.auth_none("root")
+        except paramiko.AuthenticationException:
+            self._transport.auth_password("root", "")
+        self._transport.set_keepalive(10)
+
+    def close(self):
+        self._transport.close()
+
+    def run(self, command, stdin=None, timeout=600, stdout_sink=None):
+        """Runs command; `stdin` is an iterable of bytes chunks. Returns
+        (exit status, stdout bytes, stderr bytes); with `stdout_sink`, a
+        function, stdout goes to it in chunks instead."""
+        channel = self._transport.open_session(timeout=10)
+        channel.settimeout(timeout)
+        channel.exec_command(command)
+        if stdin is not None:
+            for chunk in stdin:
+                channel.sendall(chunk)
+        channel.shutdown_write()
+        stdout = []
+        while chunk := channel.recv(1 << 16):
+            (stdout_sink or stdout.append)(chunk)
+        stderr = channel.makefile_stderr("rb").read()
+        status = channel.recv_exit_status()
+        channel.close()
+        return status, b"".join(stdout), stderr
+
+    def run_check(self, command, stdin=None, timeout=600, stdout_sink=None):
+        status, stdout, stderr = self.run(command, stdin, timeout, stdout_sink)
+        if status != 0:
+            raise RuntimeError(f"{command!r} failed ({status}): {stderr.decode(errors='replace')}")
+        return stdout
+
+    def put(self, path, remote_path):
+        """Copies a local file to the target."""
+        def chunks():
+            with open(path, "rb") as f:
+                yield from iter(lambda: f.read(1 << 20), b"")
+        self.run_check(f"cat > {shlex.quote(remote_path)}", stdin=chunks())
+
+    def write_image(self, wic_bz2, bmap, device):
+        """Writes a compressed disk image to a block device of the target:
+        only the ranges the block map lists, each read back from the device
+        and checked against the block map's checksum."""
+        checksum_type, ranges = bmap_ranges(bmap)
+        with bz2.open(wic_bz2) as image:
+            for offset, length, _ in ranges:
+                image.seek(offset)
+
+                def chunks(remaining=length):
+                    while remaining:
+                        chunk = image.read(min(remaining, 1 << 20))
+                        if not chunk:
+                            raise EOFError("image ends before its block map does")
+                        remaining -= len(chunk)
+                        yield chunk
+
+                # busybox dd writes each read as it came; without count=,
+                # short reads from the pipe lose nothing.
+                self.run_check(f"dd of={device} bs=4096 seek={offset // 4096} 2>/dev/null",
+                               stdin=chunks())
+        self.run_check("sync && echo 3 > /proc/sys/vm/drop_caches")
+        for offset, length, checksum in ranges:
+            # Whole 4 KiB blocks, except for a last range that ends in a
+            # partial block, which the image's sectors still divide.
+            block = 4096 if length % 4096 == 0 else 512
+            digest = hashlib.new(checksum_type)
+            self.run_check(f"dd if={device} bs={block} skip={offset // block} "
+                           f"count={length // block} 2>/dev/null", stdout_sink=digest.update)
+            assert not checksum or digest.hexdigest() == checksum, \
+                f"{device}: bytes {offset}+{length} read back differently"

@@ -1,0 +1,12 @@
+# Started on boots from an A/B slot only, by edgenode-boot-generator.
+[Unit]
+Description=Commit or reject the booted A/B slot
+ConditionKernelCommandLine=rauc.slot
+Wants=edgenoded.service
+After=edgenoded.service data.mount
+Requires=data.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/edgenode-boot-commit

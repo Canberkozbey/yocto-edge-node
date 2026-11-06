@@ -1,5 +1,7 @@
 """The image boots into the expected, healthy system."""
 
+import pytest
+
 
 def test_boot_completes_without_failed_units(shell):
     state = shell.run("systemctl is-system-running")[0]
@@ -27,3 +29,18 @@ def test_only_wired_network(shell):
     # The class directory may exist without devices, or not at all.
     bluetooth = shell.run_check("ls -1 /sys/class/bluetooth 2>/dev/null || true")
     assert not bluetooth, bluetooth
+
+
+def test_sd_card_slot_units_stay_out_of_other_boots(shell):
+    # The data partition's mount and the slot commit are added only to boots
+    # from an A/B slot (edgenode-boot-generator, Raspberry Pi 5). Any other
+    # boot, such as network boot in the lab, must not even wait for the SD
+    # card's partitions.
+    if shell.run("systemctl cat data.mount >/dev/null 2>&1")[2] != 0:
+        pytest.skip("no A/B update system in this image")
+    if "rauc.slot=" in shell.run_check("cat /proc/cmdline")[0]:
+        pytest.skip("booted from an A/B slot")
+    for unit in ("data.mount", "edgenode-boot-commit.service"):
+        never_started = shell.run_check(
+            f"systemctl show --property=ConditionTimestampMonotonic --value {unit}")
+        assert never_started == ["0"], unit

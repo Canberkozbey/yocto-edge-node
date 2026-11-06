@@ -1,0 +1,14 @@
+# The SD card's data partition: what survives updates (RAUC's status, the
+# slots' bad marks). Both slots mount the same partition. Mounted on boots
+# from an A/B slot only, by edgenode-boot-generator: network boot (tests)
+# leaves the card alone, so that it can be rewritten.
+[Unit]
+Description=Persistent data partition
+ConditionKernelCommandLine=rauc.slot
+Before=local-fs.target
+
+[Mount]
+What=/dev/mmcblk0p6
+Where=/data
+Type=ext4
+Options=noatime,nodev,nosuid,noexec

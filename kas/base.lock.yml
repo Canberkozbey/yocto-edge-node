@@ -6,3 +6,5 @@ overrides:
       commit: 919588393f41b48cb6c5d832aa35e58a19b6762d
     meta-openembedded:
       commit: c734c2cb9713dbd6d50697a9f6c25ebdf3ae589e
+    meta-rauc:
+      commit: 38da0e5866a953e664001ba90b5edad68d68cd5d

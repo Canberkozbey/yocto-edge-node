@@ -1,0 +1,26 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+#
+# systemd generator: on boots from an A/B slot (rauc.slot= on the kernel
+# command line) adds the data partition's mount and the slot commit to the
+# boot (docs/adr/0008-ab-updates-with-rauc-and-tryboot.md).
+#
+# Other boots (network boot in the lab) leave both units out of the boot
+# entirely. Enabling them statically with a condition is not enough: systemd
+# checks a mount unit's condition only after its device has appeared, and
+# waits 90 s for a partition that the SD card may not have.
+#
+# Called by systemd with its generator directories; the first is for units
+# with normal priority.
+
+read -r cmdline < /proc/cmdline
+case " $cmdline " in
+*" rauc.slot="*)
+	units=/usr/lib/systemd/system
+	mkdir -p "$1/local-fs.target.wants" "$1/multi-user.target.wants"
+	ln -sf "$units/data.mount" "$1/local-fs.target.wants/data.mount"
+	ln -sf "$units/edgenode-boot-commit.service" \
+		"$1/multi-user.target.wants/edgenode-boot-commit.service"
+	;;
+esac
+exit 0

@@ -1,0 +1,58 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+#
+# Runs once after each boot from slot A or B and tells RAUC whether the
+# booted slot works (docs/adr/0008-ab-updates-with-rauc-and-tryboot.md).
+#
+# Healthy means: edgenoded, the node's own service, reports ready to systemd
+# within READY_TIMEOUT seconds and then runs STABLE_SECONDS without being
+# restarted.
+#
+# - Healthy: `rauc status mark-good`. After a trial boot this commits the
+#   slot: it becomes the default.
+# - Not healthy after a trial boot: `rauc status mark-bad`, then a reboot,
+#   which starts the previous slot again (the firmware's tryboot flag lasts
+#   for one boot only).
+# - Not healthy on the committed slot: there is nothing known to work to go
+#   back to. The service's own restarts and the logs take it from there.
+
+READY_TIMEOUT=60
+STABLE_SECONDS=15
+SERVICE=edgenoded.service
+
+active() {
+	systemctl is-active --quiet "$SERVICE"
+}
+
+restarts() {
+	systemctl show --property=NRestarts --value "$SERVICE"
+}
+
+healthy() {
+	waited=0
+	until active; do
+		[ "$waited" -ge "$READY_TIMEOUT" ] && return 1
+		sleep 1
+		waited=$((waited + 1))
+	done
+	before=$(restarts)
+	sleep "$STABLE_SECONDS"
+	active && [ "$(restarts)" = "$before" ]
+}
+
+slot=$(edgenode-boot get-current) || exit 1
+
+if healthy; then
+	echo "slot $slot is healthy"
+	exec rauc status mark-good
+fi
+
+if edgenode-boot is-trial; then
+	echo "slot $slot failed its trial boot: $SERVICE is not running; going back to the previous slot" >&2
+	rauc status mark-bad
+	systemctl reboot
+	exit 1
+fi
+
+echo "slot $slot is unhealthy: $SERVICE is not running, and there is no slot to go back to" >&2
+exit 1
