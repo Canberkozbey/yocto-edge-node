@@ -9,6 +9,11 @@ output; docs/lab.md describes the host setup it relies on.
     sudo tools/netboot.py deploy edgenode-image-dev --images "$LG_IMAGES"
     sudo tools/netboot.py remove
 
+Run from a checkout, it reads the repository's lab/lab.toml. CI runs a
+root-owned installed copy instead (/usr/local/sbin/edgenode-netboot, allowed
+by a sudo rule), which reads only the root-owned /etc/edgenode/lab.toml
+(docs/lab.md, docs/adr/0005).
+
 The boot files are copied out of the image's own boot partition, so a network
 boot uses exactly what the SD card would. Only cmdline.txt changes, to mount
 the root filesystem over NFS. After `remove` the Pi boots from its SD card
@@ -27,8 +32,8 @@ import tempfile
 import tomllib
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
-LAB_CONFIG = REPO / "lab" / "lab.toml"
+REPO_CONFIG = Path(__file__).resolve().parent.parent / "lab" / "lab.toml"
+SYSTEM_CONFIG = Path("/etc/edgenode/lab.toml")
 MACHINE = "raspberrypi5"
 IMAGES = ("edgenode-image", "edgenode-image-dev")
 
@@ -139,7 +144,9 @@ def remove(config):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--config", type=Path, default=LAB_CONFIG, help="lab configuration (TOML)")
+    parser.add_argument("--config", type=Path,
+                        help=f"lab configuration (default: {REPO_CONFIG.name} of the "
+                             f"checkout, else {SYSTEM_CONFIG})")
     commands = parser.add_subparsers(dest="command", required=True)
     deploy_cmd = commands.add_parser("deploy", help="serve an image to the Pi")
     deploy_cmd.add_argument("image", choices=IMAGES)
@@ -148,8 +155,16 @@ def main():
     commands.add_parser("remove", help="stop serving; the Pi boots from its SD card")
     args = parser.parse_args()
 
-    with open(args.config, "rb") as f:
-        config = tomllib.load(f)
+    if args.config and os.geteuid() == 0 and "SUDO_USER" in os.environ:
+        # Through sudo a chosen configuration would choose which directories
+        # root replaces; the sudo rule for CI must not allow that.
+        sys.exit("--config is not accepted through sudo")
+    config_path = args.config or (REPO_CONFIG if REPO_CONFIG.is_file() else SYSTEM_CONFIG)
+    try:
+        with open(config_path, "rb") as f:
+            config = tomllib.load(f)
+    except FileNotFoundError:
+        sys.exit(f"lab configuration not found: {config_path} (docs/lab.md)")
     if args.command == "deploy":
         if not args.images.strip():
             sys.exit("--images is empty: is LG_IMAGES set in this shell?")

@@ -1,0 +1,6 @@
+# Lets members of the edgenode-lab group (the CI runner's account) serve
+# images to the lab's Raspberry Pi without a password: only this root-owned
+# copy of tools/netboot.py, which reads only /etc/edgenode/lab.toml and
+# refuses --config through sudo. Install as /etc/sudoers.d/edgenode-netboot
+# (docs/lab.md, docs/adr/0005).
+%edgenode-lab ALL=(root) NOPASSWD: /usr/local/sbin/edgenode-netboot

@@ -127,6 +127,27 @@ dnsmasq as the host's DNS resolver, which would point the host at a DNS
 server that is turned off.
 `journalctl -u dnsmasq -f` shows each DHCP exchange and TFTP transfer.
 
+## CI access (once)
+
+The CI runner serves images through a root-owned copy of `tools/netboot.py`
+that a sudo rule allows without a password ([ADR 0005](adr/0005-ci-on-lab-hardware.md)).
+Set `RUNNER_USER` to the account the runner service runs as, which
+`ps -o user= -C Runner.Listener` shows.
+
+```sh
+sudo groupadd --system edgenode-lab
+sudo usermod -aG edgenode-lab,dialout "$RUNNER_USER"
+sudo install -m 0755 tools/netboot.py /usr/local/sbin/edgenode-netboot
+sudo install -D -m 0644 lab/lab.toml /etc/edgenode/lab.toml
+sudo install -m 0440 lab/sudoers.d/edgenode-netboot /etc/sudoers.d/edgenode-netboot
+sudo visudo -cf /etc/sudoers.d/edgenode-netboot
+```
+
+Then restart the runner service so it gets the new groups (in the runner's
+directory: `sudo ./svc.sh stop && sudo ./svc.sh start`). After a change to
+`tools/netboot.py` or `lab/lab.toml`, repeat the matching `install` line;
+the CI job warns while the installed tool differs.
+
 ## Bootloader settings (once)
 
 Take out the SD card, boot Raspberry Pi OS from the USB stick, log in over

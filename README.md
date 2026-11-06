@@ -140,11 +140,15 @@ the opposite result, so a check that cannot tell the two apart fails.
 
 ## CI
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) builds both images and
-runs the tests on every push to `main` and on pull requests. It runs on
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) has two jobs. The
+first builds both images for QEMU and runs the tests there, on every push to
+`main` and on pull requests. The second, for pushes and manual runs only,
+builds for the Raspberry Pi 5, serves each image to the lab's board over the
+network and runs the same tests on it; how CI gets the privileges that
+takes is in [ADR 0005](docs/adr/0005-ci-on-lab-hardware.md). Both run on
 a self-hosted runner with the label `yocto`: a Yocto build needs more memory
 and disk than hosted runners offer, and the runner keeps the download and
-shared state caches between runs. Console logs and a JUnit report are kept
+shared state caches between runs. Console logs and JUnit reports are kept
 as build artifacts.
 
 Runner host requirements: Docker, kas (with `kas-container` on `PATH`),

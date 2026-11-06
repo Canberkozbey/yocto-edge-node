@@ -1,4 +1,5 @@
-# Build the image and run the integration tests in QEMU on every push.
+# Build the images and run the integration tests: in QEMU on every push and
+# pull request, then on the lab's Raspberry Pi 5 for pushes and manual runs.
 #
 # Runs on a self-hosted runner: a Yocto build needs more memory and disk
 # than GitHub's hosted runners offer, and the runner keeps the download and
@@ -42,6 +43,7 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Build
+        id: build
         run: |
           mkdir -p "$DL_DIR" "$SSTATE_DIR" "$KAS_WORK_DIR"
           kas-container build "$KAS_FILES"
@@ -61,7 +63,7 @@ jobs:
 
       - name: Tests, production image (contents and QEMU)
         # Runs even when the development tests failed: both results matter.
-        if: success() || failure()
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           .venv/bin/pytest --lg-env tests/env/qemu-prod.yaml tests/image tests/prod -v \
             --lg-log=test-logs/prod --junitxml=test-logs/prod.xml
@@ -71,5 +73,83 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-logs-qemuarm64
+          path: test-logs/
+          if-no-files-found: ignore
+
+  raspberrypi5:
+    name: Build and test on hardware (Raspberry Pi 5)
+    # The runner's host is the lab's build host: it serves the Pi's network
+    # boot and reaches its serial console and smart plug (docs/lab.md).
+    runs-on: [self-hosted, linux, x64, yocto]
+    needs: qemuarm64
+    # Hardware runs only for this repository's own pushes and manual runs,
+    # never for pull requests (docs/adr/0005).
+    if: github.event_name != 'pull_request'
+    timeout-minutes: 480
+    # One run at a time owns the Pi, whatever the branch.
+    concurrency:
+      group: lab-raspberrypi5
+      cancel-in-progress: false
+    env:
+      KAS_FILES: kas/base.yml:kas/machine/raspberrypi5.yml
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up work and cache directories
+        run: |
+          echo "DL_DIR=${DL_DIR:-$HOME/yocto/cache/downloads}" >> "$GITHUB_ENV"
+          echo "SSTATE_DIR=${SSTATE_DIR:-$HOME/yocto/cache/sstate}" >> "$GITHUB_ENV"
+          echo "KAS_WORK_DIR=$HOME/yocto/ci-work" >> "$GITHUB_ENV"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Check the installed network boot tool
+        # CI serves images through a root-owned copy of tools/netboot.py, so a
+        # change to the repository's copy takes effect only once reinstalled.
+        run: |
+          cmp -s tools/netboot.py /usr/local/sbin/edgenode-netboot || \
+            echo "::warning::/usr/local/sbin/edgenode-netboot differs from tools/netboot.py; reinstall it (docs/lab.md)"
+
+      - name: Build
+        id: build
+        run: |
+          mkdir -p "$DL_DIR" "$SSTATE_DIR" "$KAS_WORK_DIR"
+          kas-container build "$KAS_FILES"
+
+      - name: Install test dependencies
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet -r tests/requirements.txt
+
+      - name: Point the tests at the build output
+        run: echo "LG_IMAGES=$KAS_WORK_DIR/build/tmp/deploy/images/raspberrypi5" >> "$GITHUB_ENV"
+
+      - name: Tests, image contents
+        run: |
+          LG_MACHINE=raspberrypi5 .venv/bin/pytest tests/image -v \
+            --junitxml=test-logs/pi5-image.xml
+
+      - name: Tests, development image (hardware)
+        # Runs even when the image checks failed, as long as there are images.
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          sudo -n /usr/local/sbin/edgenode-netboot deploy edgenode-image-dev --images "$LG_IMAGES"
+          .venv/bin/pytest --lg-env tests/env/pi5-dev.yaml tests/dev -v \
+            --lg-log=test-logs/pi5-dev --junitxml=test-logs/pi5-dev.xml
+
+      - name: Tests, production image (hardware)
+        # Runs even when the development tests failed: both results matter.
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          sudo -n /usr/local/sbin/edgenode-netboot deploy edgenode-image --images "$LG_IMAGES"
+          .venv/bin/pytest --lg-env tests/env/pi5-prod.yaml tests/prod -v \
+            --lg-log=test-logs/pi5-prod --junitxml=test-logs/pi5-prod.xml
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-logs-raspberrypi5
           path: test-logs/
           if-no-files-found: ignore
