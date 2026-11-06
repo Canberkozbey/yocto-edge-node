@@ -6,7 +6,6 @@ too. On the Raspberry Pi 5 the service itself reads the ADS1115.
 """
 
 import json
-import shlex
 
 import pytest
 
@@ -33,14 +32,12 @@ def instances(shell):
         shell.run_check(f"echo 0.125000000 > '{FAKE_IIO}/in_voltage{channel}_scale'")
 
     for name, (port, lines) in INSTANCES.items():
-        conf = f"{WORK}/{name}.conf"
-        lines = ["bind = 127.0.0.1", f"port = {port}", *lines]
-        shell.run_check(f"printf '%s\\n' {' '.join(shlex.quote(l) for l in lines)} > {conf}")
-        # A subshell keeps the process out of the shell's job table.
-        shell.run_check(f"(setsid edgenoded --config {conf} </dev/null "
-                        f">{WORK}/{name}.log 2>&1 & echo $! > {WORK}/{name}.pid)")
+        helpers.start_edgenoded(shell, WORK, name,
+                                ["bind = 127.0.0.1", f"port = {port}", *lines])
     yield
-    shell.run(f"kill $(cat {WORK}/*.pid) 2>/dev/null; rm -rf {WORK}")
+    for name in INSTANCES:
+        helpers.stop_edgenoded(shell, WORK, name)
+    shell.run(f"rm -rf {WORK}")
 
 
 def sensors(shell, name):

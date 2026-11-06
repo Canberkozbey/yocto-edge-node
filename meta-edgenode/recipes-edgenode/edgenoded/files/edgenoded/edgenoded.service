@@ -20,6 +20,8 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+# A machine with a display opens DRM devices instead, through a drop-in
+# from its edgenode-config (docs/adr/0006).
 PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

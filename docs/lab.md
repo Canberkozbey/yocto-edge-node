@@ -60,13 +60,19 @@ the kernel drives it in SPI mode 3.
 | DC | Pi pin 18 (GPIO24, data/command) |
 | BLK | Pi pin 12 (GPIO18, backlight) |
 
-The tests check what the kernel reports; the picture itself is a manual
-check. The display appears as a framebuffer too: find it by name and fill it
-with noise.
+`edgenoded` shows the host name and the readings on it
+([ADR 0006](adr/0006-display-through-kms.md)). The tests check what the
+kernel reports; the picture itself is a manual check: turn the
+potentiometer, and its value follows within a second.
+
+To try the panel without the service, stop it (the console takes the panel
+back), find the panel's framebuffer and fill it with noise:
 
 ```sh
-grep . /sys/class/graphics/fb*/name
-cat /dev/urandom > /dev/fbN      # N: the display's framebuffer
+systemctl stop edgenoded
+fb=$(basename "$(dirname "$(grep -l panel-mipi-dbi /sys/class/graphics/fb*/name)")")
+cat /dev/urandom > /dev/$fb
+systemctl start edgenoded
 ```
 
 ## Network

@@ -2,6 +2,7 @@
 
 import functools
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -40,6 +41,47 @@ def wait_for_http(url, timeout=120):
             if time.monotonic() > deadline:
                 raise
             time.sleep(2)
+
+
+def wait_until(condition, timeout=15, interval=0.5):
+    """Calls condition() until it returns something true; returns that, or
+    the last (false) result once timeout seconds have passed."""
+    deadline = time.monotonic() + timeout
+    while True:
+        result = condition()
+        if result or time.monotonic() > deadline:
+            return result
+        time.sleep(interval)
+
+
+def drm_debugfs(shell, connector):
+    """The DRM debugfs directory of the card with this connector (a name, or
+    a glob such as SPI-*, as in /sys/class/drm/card<N>-<connector>)."""
+    out = shell.run_check(f"ls -1d /sys/class/drm/card*-{connector}")
+    assert len(out) == 1, f"expected one {connector} connector, found: {out}"
+    card = out[0].rsplit("/", 1)[1].split("-", 1)[0]
+    return f"/sys/kernel/debug/dri/{card.removeprefix('card')}"
+
+
+def screen_owners(shell, debugfs):
+    """Processes whose framebuffers are on screen: debugfs prints "allocated
+    by = <comm>" under each plane that shows one."""
+    state = shell.run_check(f"cat {debugfs}/state")
+    return [line.split("=", 1)[1].strip() for line in state if "allocated by" in line]
+
+
+def start_edgenoded(shell, work, name, lines):
+    """Starts an extra edgenoded on the target, configured by these lines,
+    with its files in work: <name>.conf, .log and .pid."""
+    conf = f"{work}/{name}.conf"
+    shell.run_check(f"printf '%s\\n' {' '.join(shlex.quote(line) for line in lines)} > {conf}")
+    # A subshell keeps the process out of the shell's job table.
+    shell.run_check(f"(setsid edgenoded --config {conf} </dev/null "
+                    f">{work}/{name}.log 2>&1 & echo $! > {work}/{name}.pid)")
+
+
+def stop_edgenoded(shell, work, name):
+    shell.run(f"kill $(cat {work}/{name}.pid) 2>/dev/null; true")
 
 
 def wait_for_ssh_banner(host, port, timeout=120):

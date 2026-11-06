@@ -2,18 +2,17 @@
 /*
  * edgenoded - edge node daemon
  *
- * Serves the node's health and analog sensor readings over HTTP, and reports
- * its state to systemd: readiness, watchdog keep-alives and shutdown. The
- * readings come from an ADC through the kernel's IIO interface. Later
- * stages add the display and MQTT publishing.
+ * Serves the node's health and analog sensor readings over HTTP, shows the
+ * readings on a display, and reports its state to systemd: readiness,
+ * watchdog keep-alives and shutdown. The readings come from an ADC through
+ * the kernel's IIO interface (sensors.c); the display is a DRM/KMS output
+ * (display.c, screen.c). A later stage adds MQTT publishing.
  */
 
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <getopt.h>
-#include <glob.h>
 #include <limits.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -30,6 +29,10 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "display.h"
+#include "screen.h"
+#include "sensors.h"
+
 #ifndef EDGENODED_VERSION
 #define EDGENODED_VERSION "0.0.0-dev"
 #endif
@@ -39,20 +42,12 @@
 #define DEFAULT_PORT     8080
 #define REQUEST_MAX      4096
 #define CLIENT_TIMEOUT_S 2
-#define MAX_CHANNELS     8
-#define CHANNEL_NAME_MAX 32
-#define MAX_IIO_CHANNEL  15
+#define SCREEN_PERIOD_MS 1000
 
 /* journald reads a leading <N> as the syslog priority of the line. */
 #define PRI_ERR  "<3>"
 #define PRI_WARN "<4>"
 #define PRI_INFO "<6>"
-
-/* One analog input: a name for the API and the ADC's IIO channel index. */
-struct channel {
-	char name[CHANNEL_NAME_MAX];
-	unsigned int index;
-};
 
 struct config {
 	char bind[INET_ADDRSTRLEN];
@@ -61,6 +56,8 @@ struct config {
 	char adc_device[PATH_MAX];
 	struct channel channels[MAX_CHANNELS];
 	unsigned int num_channels;
+	/* DRM connector to show the readings on ("SPI-1"); "" for none */
+	char display_connector[32];
 };
 
 static volatile sig_atomic_t stop_requested;
@@ -269,6 +266,17 @@ static int load_config(const char *path, bool required, struct config *cfg)
 				break;
 			}
 			snprintf(cfg->adc_device, sizeof(cfg->adc_device), "%s", value);
+		} else if (strcmp(key, "display_connector") == 0) {
+			if (!display_connector_valid(value) ||
+			    strlen(value) >= sizeof(cfg->display_connector)) {
+				log_msg(PRI_ERR, "%s:%u: invalid display_connector '%s' "
+					"(a name from /sys/class/drm, such as SPI-1)",
+					path, lineno, value);
+				ret = -1;
+				break;
+			}
+			snprintf(cfg->display_connector, sizeof(cfg->display_connector),
+				 "%s", value);
 		} else if (strncmp(key, "channel.", 8) == 0) {
 			if (add_channel(cfg, key + 8, value) < 0) {
 				log_msg(PRI_ERR, "%s:%u: invalid or duplicate channel '%s = %s' "
@@ -285,74 +293,6 @@ static int load_config(const char *path, bool required, struct config *cfg)
 
 	fclose(f);
 	return ret;
-}
-
-/*
- * The IIO device directory under the ADC's sysfs directory. Its number
- * (iio:deviceN) depends on probe order, so it is looked up on every read.
- */
-static int find_iio_device(const char *adc_device, char *out, size_t len)
-{
-	char pattern[PATH_MAX + 16];
-	glob_t found;
-	int ret = -1;
-
-	snprintf(pattern, sizeof(pattern), "%s/iio:device*", adc_device);
-	if (glob(pattern, 0, NULL, &found) == 0 && found.gl_pathc == 1 &&
-	    strlen(found.gl_pathv[0]) < len) {
-		snprintf(out, len, "%s", found.gl_pathv[0]);
-		ret = 0;
-	}
-	globfree(&found);
-	return ret;
-}
-
-/* Reads in_voltage<index>_<attr> of an IIO device into buf, without the newline. */
-static int read_iio_attr(const char *iio_dir, unsigned int index, const char *attr,
-			 char *buf, size_t len)
-{
-	char path[PATH_MAX + 64];
-	ssize_t n;
-	int fd;
-
-	snprintf(path, sizeof(path), "%s/in_voltage%u_%s", iio_dir, index, attr);
-	fd = open(path, O_RDONLY | O_CLOEXEC);
-	if (fd < 0)
-		return -1;
-	/* For a raw value this read starts a conversion and waits for it. */
-	n = read(fd, buf, len - 1);
-	close(fd);
-	if (n <= 0)
-		return -1;
-	buf[n] = '\0';
-	buf[strcspn(buf, "\n")] = '\0';
-	return 0;
-}
-
-static int read_millivolts(const char *iio_dir, unsigned int index,
-			   long *raw, double *millivolts)
-{
-	char text[64];
-	double scale;
-	char *end;
-
-	if (read_iio_attr(iio_dir, index, "raw", text, sizeof(text)) < 0)
-		return -1;
-	errno = 0;
-	*raw = strtol(text, &end, 10);
-	if (errno || end == text || *end != '\0')
-		return -1;
-
-	/* IIO voltage scales are millivolts per count. */
-	if (read_iio_attr(iio_dir, index, "scale", text, sizeof(text)) < 0)
-		return -1;
-	errno = 0;
-	scale = strtod(text, &end);
-	if (errno || end == text || *end != '\0')
-		return -1;
-
-	*millivolts = (double)*raw * scale;
-	return 0;
 }
 
 /* Appends to buf, keeping it terminated; returns -1 once it is full. */
@@ -381,28 +321,29 @@ static int append(char *buf, size_t size, size_t *used, const char *fmt, ...)
  */
 static int sensors_json(const struct config *cfg, char *buf, size_t size)
 {
-	char iio_dir[PATH_MAX];
-	bool have_device;
+	struct reading readings[MAX_CHANNELS];
 	size_t used = 0;
 
-	have_device = cfg->adc_device[0] &&
-		find_iio_device(cfg->adc_device, iio_dir, sizeof(iio_dir)) == 0;
+	read_sensors(cfg->adc_device, cfg->channels, cfg->num_channels, readings);
 
 	append(buf, size, &used, "{\"sensors\":{");
 	for (unsigned int i = 0; i < cfg->num_channels; i++) {
-		const struct channel *ch = &cfg->channels[i];
-		double millivolts;
-		long raw;
+		const struct reading *r = &readings[i];
 
 		append(buf, size, &used, "%s\"%s\":{\"channel\":%u,",
-		       i ? "," : "", ch->name, ch->index);
-		if (!have_device)
+		       i ? "," : "", r->channel->name, r->channel->index);
+		switch (r->status) {
+		case READING_NO_DEVICE:
 			append(buf, size, &used, "\"error\":\"no IIO device\"}");
-		else if (read_millivolts(iio_dir, ch->index, &raw, &millivolts) < 0)
+			break;
+		case READING_FAILED:
 			append(buf, size, &used, "\"error\":\"read failed\"}");
-		else
+			break;
+		case READING_OK:
 			append(buf, size, &used, "\"raw\":%ld,\"millivolts\":%.3f}",
-			       raw, millivolts);
+			       r->raw, r->millivolts);
+			break;
+		}
 	}
 	return append(buf, size, &used, "}}\n");
 }
@@ -560,6 +501,63 @@ static void handle_client(int listen_fd, const struct config *cfg, long long sta
 	close(fd);
 }
 
+/*
+ * The display, when one is configured. It is opened once its connector is
+ * there (the panel's driver may load after the daemon starts) and again
+ * after an error, and redrawn every SCREEN_PERIOD_MS when what it would
+ * show has changed.
+ */
+struct screen_output {
+	struct display display;
+	bool open;
+	bool drawn;
+	struct screen shown;
+	char last_error[256];	/* logged once until it changes */
+	long long next_ms;
+};
+
+static void update_screen(struct screen_output *out, const struct config *cfg)
+{
+	struct reading readings[MAX_CHANNELS];
+	char hostname[65] = "";
+	struct screen next;
+	char err[sizeof(out->last_error)];
+
+	if (!out->open) {
+		if (display_open(&out->display, cfg->display_connector,
+				 err, sizeof(err)) < 0) {
+			if (strcmp(err, out->last_error) != 0)
+				log_msg(PRI_WARN, "Display not ready (%s), retrying", err);
+			snprintf(out->last_error, sizeof(out->last_error), "%s", err);
+			return;
+		}
+		out->open = true;
+		out->drawn = false;
+		out->last_error[0] = '\0';
+		log_msg(PRI_INFO, "Showing readings on %s %s (%ux%u)",
+			out->display.card, cfg->display_connector,
+			out->display.canvas.width, out->display.canvas.height);
+	}
+
+	read_sensors(cfg->adc_device, cfg->channels, cfg->num_channels, readings);
+	if (gethostname(hostname, sizeof(hostname) - 1) < 0)
+		snprintf(hostname, sizeof(hostname), "edgenode");
+	screen_build(&next, hostname, readings, cfg->num_channels);
+	if (out->drawn && memcmp(&next, &out->shown, sizeof(next)) == 0)
+		return;
+
+	screen_draw(&out->display.canvas, &next);
+	if (display_flush(&out->display) < 0) {
+		log_msg(PRI_WARN, "Display %s: %s, reopening",
+			cfg->display_connector, strerror(errno));
+		display_close(&out->display);
+		out->open = false;
+		return;
+	}
+	out->shown = next;
+	out->drawn = true;
+}
+
 static void on_signal(int sig)
 {
 	(void)sig;
@@ -602,6 +600,8 @@ int main(int argc, char **argv)
 	const char *config_path = DEFAULT_CONFIG;
 	bool config_required = false;
 	const char *port_arg = NULL;
+	struct screen_output screen = { .display = { .fd = -1 } };
+	bool show_screen;
 	struct pollfd pfd;
 	char status[128];
 	long long start_ms, next_ping = 0;
@@ -652,24 +652,37 @@ int main(int argc, char **argv)
 	watchdog_ms = watchdog_interval_ms();
 	if (watchdog_ms > 0)
 		next_ping = start_ms + watchdog_ms;
+	show_screen = cfg.display_connector[0] != '\0';
+	screen.next_ms = start_ms;
 
 	log_msg(PRI_INFO, "edgenoded %s listening on %s:%u",
 		EDGENODED_VERSION, cfg.bind, cfg.port);
 	if (cfg.num_channels)
 		log_msg(PRI_INFO, "Reading %u analog input(s) from %s",
 			cfg.num_channels, cfg.adc_device[0] ? cfg.adc_device : "(no adc_device)");
+	if (show_screen)
+		log_msg(PRI_INFO, "Showing readings on display connector %s",
+			cfg.display_connector);
 	snprintf(status, sizeof(status),
 		 "READY=1\nSTATUS=Serving health on %s:%u", cfg.bind, cfg.port);
 	notify(status);
 
 	while (!stop_requested) {
+		long long now = now_ms();
 		int timeout = -1;
 		int ready;
 
 		if (watchdog_ms > 0) {
-			long long left = next_ping - now_ms();
+			long long left = next_ping - now;
 
 			timeout = left > 0 ? (int)left : 0;
+		}
+		if (show_screen) {
+			long long left = screen.next_ms - now;
+			int wait = left > 0 ? (int)left : 0;
+
+			if (timeout < 0 || wait < timeout)
+				timeout = wait;
 		}
 
 		ready = poll(&pfd, 1, timeout);
@@ -686,10 +699,16 @@ int main(int argc, char **argv)
 		}
 		if (ready > 0 && (pfd.revents & POLLIN))
 			handle_client(pfd.fd, &cfg, start_ms);
+		if (show_screen && now_ms() >= screen.next_ms) {
+			update_screen(&screen, &cfg);
+			screen.next_ms = now_ms() + SCREEN_PERIOD_MS;
+		}
 	}
 
 	notify("STOPPING=1");
 	log_msg(PRI_INFO, "Shutting down");
+	if (screen.open)
+		display_close(&screen.display);
 	close(pfd.fd);
 	return stop_requested ? EXIT_SUCCESS : EXIT_FAILURE;
 }

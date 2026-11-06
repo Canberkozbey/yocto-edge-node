@@ -24,3 +24,9 @@ local_conf_header:
     # debug archives. The tests here use labgrid, and the production image
     # allows no GPLv3 (docs/adr/0002). oe-core's no-gplv3.inc does the same.
     MACHINE_ESSENTIAL_EXTRA_RDEPENDS:remove = "tar"
+
+  qemuarm64-vkms: |
+    # vkms, a virtual KMS display, stands in for a panel when the tests drive
+    # edgenoded's display code (tests/dev/test_screen.py). Built as a module
+    # (meta-edgenode/recipes-kernel/linux); only the development image has it.
+    IMAGE_INSTALL:append:pn-edgenode-image-dev = " kernel-module-vkms"

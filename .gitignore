@@ -14,4 +14,8 @@ __pycache__/
 
 # Test logs written by CI and local runs
 /test-logs/
-/actions-runner/
+
+# Standalone builds of edgenoded (its Makefile)
+/meta-edgenode/recipes-edgenode/edgenoded/files/edgenoded/*.o
+/meta-edgenode/recipes-edgenode/edgenoded/files/edgenoded/fonts.c
+/meta-edgenode/recipes-edgenode/edgenoded/files/edgenoded/edgenoded

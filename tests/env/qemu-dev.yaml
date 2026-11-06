@@ -6,6 +6,10 @@
 
 targets:
   main:
+    # Devices this target has; tests marked lg_feature("...") need them.
+    # vkms: the virtual KMS display module in the development image.
+    features:
+      - vkms
     drivers:
       QEMUDriver:
         qemu_bin: qemu

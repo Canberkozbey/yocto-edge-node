@@ -16,6 +16,8 @@ GRAPHICS_PACKAGE = re.compile(
 # Wi-Fi and Bluetooth firmware from the Raspberry Pi BSP. The node is wired
 # only (docs/adr/0003).
 WIRELESS_FIRMWARE = re.compile(r"^(linux-firmware-rpidistro|bluez-firmware)")
+# systemd drop-in that gives edgenoded the device access a display needs
+DISPLAY_DROP_IN = "/usr/lib/systemd/system/edgenoded.service.d/display.conf"
 
 
 @pytest.fixture(scope="module")
@@ -67,20 +69,52 @@ def test_both_images_run_edgenoded(prod, dev):
         assert {"edgenoded", "edgenode-config"} <= image.packages
 
 
-def test_edgenoded_inputs_follow_the_machine(prod, dev):
-    # The Raspberry Pi 5 adds its ADC to the configuration (dynamic-layers);
-    # other machines have no analog inputs.
+def edgenoded_settings(image):
+    active = [line.split("#", 1)[0].strip()
+              for line in image.read_file("/etc/edgenoded.conf").splitlines()]
+    return dict(line.replace(" ", "").split("=", 1) for line in active if "=" in line)
+
+
+def test_edgenoded_config_follows_the_machine(prod, dev):
+    # The Raspberry Pi 5 adds its ADC and display to the configuration
+    # (dynamic-layers); other machines have neither.
     for image in (prod, dev):
-        active = [line.split("#", 1)[0].strip()
-                  for line in image.read_file("/etc/edgenoded.conf").splitlines()]
-        settings = dict(line.replace(" ", "").split("=", 1) for line in active if "=" in line)
+        settings = edgenoded_settings(image)
         if helpers.MACHINE == "raspberrypi5":
             assert settings.get("adc_device") == "/sys/bus/i2c/devices/1-0048"
             assert {k: v for k, v in settings.items() if k.startswith("channel.")} == {
                 "channel.potentiometer": "0", "channel.ground": "1", "channel.supply": "2",
             }
+            assert settings.get("display_connector") == "SPI-1"
         else:
             assert "adc_device" not in settings
+            assert "display_connector" not in settings
+
+
+def test_device_access_only_for_a_display(prod, dev):
+    # The base unit hides device nodes (PrivateDevices=yes). The Raspberry
+    # Pi 5's drop-in lets the service open DRM devices, for the panel, and
+    # keeps every other device closed.
+    for image in (prod, dev):
+        unit = image.read_file("/usr/lib/systemd/system/edgenoded.service").splitlines()
+        assert "PrivateDevices=yes" in unit
+        if helpers.MACHINE == "raspberrypi5":
+            drop_in = image.read_file(DISPLAY_DROP_IN).splitlines()
+            assert {"DevicePolicy=closed", "DeviceAllow=char-drm rw"} <= set(drop_in)
+        else:
+            with pytest.raises(FileNotFoundError):
+                image.read_file(DISPLAY_DROP_IN)
+
+
+def test_edgenoded_license_includes_its_font(prod):
+    # The screen font compiled into the binary (Spleen) is BSD-2-Clause.
+    assert prod.licenses["edgenoded"] == "MIT & BSD-2-Clause"
+
+
+def test_virtual_display_only_in_qemu_dev_image(prod, dev):
+    # vkms stands in for a panel in the QEMU tests (tests/dev/test_screen.py).
+    assert has_kernel_module(dev, "vkms") == helpers.MACHINE.startswith("qemu")
+    assert not has_kernel_module(prod, "vkms")
 
 
 @pytest.mark.skipif(helpers.MACHINE != "raspberrypi5", reason="Raspberry Pi 5 boot files")

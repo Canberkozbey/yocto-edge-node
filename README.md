@@ -14,7 +14,7 @@ tests that run automatically, in QEMU and on real hardware.
 | --- | --- |
 | `meta-edgenode/` | The layer: distro policy, image and the node's own recipes |
 | `meta-edgenode/dynamic-layers/` | Board-specific metadata, parsed only when that BSP layer is present |
-| `meta-edgenode/recipes-edgenode/` | `edgenoded`, the node's service (health and sensor readings over HTTP), and its configuration |
+| `meta-edgenode/recipes-edgenode/` | `edgenoded`, the node's service (health and sensor readings over HTTP, readings on the display), and its configuration |
 | `meta-edgenode/recipes-kernel/edgenode-ads1115/` | The node's own kernel driver: ADS1115 ADC through IIO ([ADR 0004](docs/adr/0004-own-ads1115-driver.md)) |
 | `kas/base.yml` | Pinned upstream layers, distro, image and build policy |
 | `kas/base.lock.yml` | Pinned revisions of third-party layers (`kas lock`) |
@@ -67,7 +67,7 @@ sudo bmaptool copy \
 | Image | For | Access | License policy |
 | --- | --- | --- | --- |
 | `edgenode-image` | Production | Root account locked, no password login; SSH root login by key only (OpenSSH default) | No (L/A)GPLv3; the build fails otherwise |
-| `edgenode-image-dev` | Development | Root without a password on the console and over SSH; `gdbserver` and `strace` | None (`gdbserver` is GPLv3) |
+| `edgenode-image-dev` | Development | Root without a password on the console and over SSH; `gdbserver`, `strace` and `i2c-tools`; in QEMU, the vkms module for the display tests | None (`gdbserver` is GPLv3) |
 
 The development image is the production image plus those extras
 (`require edgenode-image.bb`), so both share every other package. Why the
@@ -127,6 +127,11 @@ What the tests check:
   (on every machine, against a stand-in IIO device made of plain files);
   the Raspberry Pi 5's configuration names its ADC and inputs, and there
   the service's own `/sensors` reads the fixed references from the host
+- the readings appear on a DRM/KMS display: in QEMU, an extra instance draws
+  on vkms (a virtual display), whose frame CRC holds still while nothing
+  changes and changes after a reading does; on the Raspberry Pi 5, the
+  service's framebuffer is on the panel in its 240x240 mode, and the
+  console gets the panel back when the service stops
 - production: root's console login asks for a password, SSH rejects root
   without one, root's password field is locked, sshd allows neither empty
   passwords nor root password logins, and no debug tools are installed
@@ -174,6 +179,9 @@ Runner host requirements: Docker, kas (with `kas-container` on `PATH`),
   function that needs it; the node is wired, so Wi-Fi and Bluetooth stay
   out and their radios off.
   Details: [ADR 0003](docs/adr/0003-only-what-a-function-needs.md).
+- **The display through KMS, without libdrm.** A dumb buffer and the
+  kernel's mode-setting ioctls; a BSD-2-Clause bitmap font converted at
+  build time. Details: [ADR 0006](docs/adr/0006-display-through-kms.md).
 
 ## Roadmap
 
@@ -186,4 +194,5 @@ Runner host requirements: Docker, kas (with `kas-container` on `PATH`),
 
 MIT, see [LICENSE](LICENSE). The kernel driver and the device tree overlays
 are GPL-2.0-only, as code built into or loaded by the Linux kernel must be;
-their files say so in their SPDX headers.
+their files say so in their SPDX headers. `edgenoded` compiles in the Spleen
+font (BSD-2-Clause), fetched at build time; its recipe declares both licenses.
