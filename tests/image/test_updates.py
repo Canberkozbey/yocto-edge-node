@@ -1,9 +1,18 @@
-"""The A/B update system as built: SD card layout, boot slot images, update
-bundles and what the images install for them (docs/adr/0008). Checked on
-the build output, without booting; tests/update installs and boots it.
+"""The A/B update system as built: SD card layout, boot slot images, the
+dm-verity root filesystems, update bundles and what the images install for
+them (docs/adr/0008, docs/adr/0009). Checked on the build output, without
+booting; tests/update installs and boots it.
 
-Host tools: mtools (FAT images) and squashfs-tools (bundles), docs/lab.md.
+Host tools: mtools (FAT images), squashfs-tools (bundles) and veritysetup
+(cryptsetup-bin), docs/lab.md.
 """
+
+import bz2
+import hashlib
+import shlex
+import shutil
+import struct
+import subprocess
 
 import pytest
 
@@ -39,9 +48,20 @@ def dev(deploy_dir):
     return helpers.Image(deploy_dir, "edgenode-image-dev")
 
 
-@pytest.fixture(scope="module")
-def bootfs(deploy_dir):
-    return deploy_dir / "edgenode-bootfs-raspberrypi5.vfat"
+def image_file(deploy_dir, image, suffix):
+    """A file the image's verity type writes: verity, verity.env, bootfs.vfat."""
+    return deploy_dir / f"{image}-raspberrypi5.rootfs.{suffix}"
+
+
+def verity_env(deploy_dir, image):
+    lines = image_file(deploy_dir, image, "verity.env").read_text().splitlines()
+    return dict(line.split("=", 1) for line in lines if "=" in line)
+
+
+def kernel_args(bootfs, name):
+    """A command line file of a boot slot image, split as the kernel splits it
+    (dm-mod.create="..." is one argument)."""
+    return shlex.split(helpers.fat_read(bootfs, name).decode())
 
 
 @pytest.mark.parametrize("image", IMAGES)
@@ -60,18 +80,66 @@ def test_autoboot_partition_selects_slot_a(deploy_dir):
     assert helpers.fat_read(image, "autoboot.txt") == AUTOBOOT_A
 
 
-def test_each_slot_boots_its_own_root_filesystem(bootfs):
-    common = helpers.fat_read(bootfs, "cmdline.txt").decode().split()
-    for slot, root in (("A", "/dev/mmcblk0p4"), ("B", "/dev/mmcblk0p5")):
-        cmdline = helpers.fat_read(bootfs, f"cmdline-{slot}.txt").decode().split()
-        assert f"root={root}" in cmdline
-        assert f"rauc.slot={slot}" in cmdline
+def card_after_block_map_write(wic, bmap, partition, path):
+    """Writes to path what a used SD card holds in one partition after the
+    image is written with its block map: the image's bytes in the ranges
+    the map lists, the card's old data (here 0xa5) everywhere else."""
+    view = bytearray(b"\xa5" * partition.size)
+    start, end = partition.start, partition.start + partition.size
+    _, ranges = helpers.bmap_ranges(bmap)
+    with bz2.open(wic) as image:
+        for offset, length, _ in ranges:
+            low, high = max(offset, start), min(offset + length, end)
+            if low < high:
+                image.seek(low)
+                view[low - start:high - start] = image.read(high - low)
+    path.write_bytes(view)
+
+
+@pytest.mark.parametrize("image", IMAGES)
+def test_boot_slots_read_the_same_from_a_used_card(deploy_dir, tmp_path, image):
+    # The block map leaves out the image's holes, so a card written with it
+    # keeps its old data there. The firmware must still read every boot file
+    # as built: a hole inside a file would hand it the old bytes. (A boot
+    # slot copied with cp --sparse=always once turned the zero runs in the
+    # kernel into holes, and the card did not boot.)
+    wic = deploy_dir / f"{image}-raspberrypi5.rootfs.wic.bz2"
+    bmap = deploy_dir / f"{image}-raspberrypi5.rootfs.wic.bmap"
+    bootfs = image_file(deploy_dir, image, "bootfs.vfat")
+    files = sorted(helpers.fat_files(bootfs))
+    for partition in helpers.gpt_partitions(wic):
+        if partition.name not in ("bootA", "bootB"):
+            continue
+        card = tmp_path / f"{partition.name}.vfat"
+        card_after_block_map_write(wic, bmap, partition, card)
+        assert helpers.fat_files(card) == set(files)
+        changed = [name for name in files
+                   if helpers.fat_read(card, name) != helpers.fat_read(bootfs, name)]
+        assert not changed, f"{partition.name} reads differently on a used card: {changed}"
+
+
+@pytest.mark.parametrize("image", IMAGES)
+def test_each_slot_boots_its_own_verified_root_filesystem(deploy_dir, image):
+    bootfs = image_file(deploy_dir, image, "bootfs.vfat")
+    env = verity_env(deploy_dir, image)
+    blocks, salt, roothash = env["VERITY_DATA_BLOCKS"], env["VERITY_SALT"], env["VERITY_ROOT_HASH"]
+    common = kernel_args(bootfs, "cmdline.txt")
+    for slot, dev in (("A", "/dev/mmcblk0p4"), ("B", "/dev/mmcblk0p5")):
+        cmdline = kernel_args(bootfs, f"cmdline-{slot}.txt")
+        # The kernel sets the verity device up over the slot's partition,
+        # with this image's root hash, and mounts it read-only.
+        table = (f"0 {int(blocks) * 8} verity 1 {dev} {dev} 4096 4096 {blocks} {blocks} "
+                 f"sha256 {roothash} {salt} 1 ignore_zero_blocks")
+        ours = [f"dm-mod.create=vroot,,,ro,{table}", f"dm-mod.waitfor={dev}",
+                "root=/dev/dm-0", "ro", f"rauc.slot={slot}"]
+        assert set(ours) <= set(cmdline), cmdline
         # The rest is the built command line: console, panic reboot.
-        assert [a for a in cmdline if not a.startswith(("root=", "rauc.slot="))] == \
+        assert [a for a in cmdline if a not in ours] == \
             [a for a in common if not a.startswith("root=")]
     assert "panic=10" in common
     assert "console=serial0,115200" in common
-    # The fallback for firmware that cannot pick a file per slot: slot A.
+    # The fallback for firmware that cannot pick a file per slot: slot A,
+    # without verification.
     assert "root=/dev/mmcblk0p4" in common
 
     config = helpers.fat_read(bootfs, "config.txt").decode().splitlines()
@@ -81,9 +149,51 @@ def test_each_slot_boots_its_own_root_filesystem(bootfs):
     assert config[start:start + len(block)] == block
 
 
-def test_boot_slot_has_the_boot_files(bootfs, deploy_dir):
+@pytest.mark.parametrize("image", IMAGES)
+def test_root_filesystem_blocks_fit_the_verity_device(deploy_dir, image):
+    # The verity device's sectors are its data block size, and ext4 does not
+    # mount with smaller blocks: the kernel panics with "bad block size".
+    with open(helpers.Image(deploy_dir, image).ext4, "rb") as f:
+        f.seek(1024)
+        superblock = f.read(1024)
+    assert struct.unpack_from("<H", superblock, 56)[0] == 0xEF53
+    block_size = 1024 << struct.unpack_from("<I", superblock, 24)[0]
+    assert block_size == int(verity_env(deploy_dir, image)["VERITY_BLOCK_SIZE"])
+
+
+@pytest.mark.parametrize("image", IMAGES)
+def test_verity_image_matches_the_root_hash_it_boots_with(deploy_dir, image):
+    # The hash tree appended to the ext4 checks out against the root hash on
+    # the boot slot's command line, as the kernel will check it.
+    veritysetup = shutil.which("veritysetup") or "/usr/sbin/veritysetup"
+    verity = image_file(deploy_dir, image, "verity")
+    ext4 = helpers.Image(deploy_dir, image).ext4
+    args = kernel_args(image_file(deploy_dir, image, "bootfs.vfat"), "cmdline-A.txt")
+    table = next(a for a in args if a.startswith("dm-mod.create=")).split(",", 4)[4].split()
+    blocks, salt, roothash = int(table[8]), table[12], table[11]
+    size = ext4.stat().st_size
+    assert blocks * 4096 == size
+    subprocess.run(
+        [veritysetup, "verify", "--no-superblock", "--hash=sha256",
+         "--data-block-size=4096", "--hash-block-size=4096", f"--data-blocks={blocks}",
+         f"--hash-offset={size}", f"--salt={salt}", str(verity), str(verity), roothash],
+        check=True, capture_output=True,
+    )
+    # The data area is the ext4 image itself.
+    digest = hashlib.sha256()
+    with open(verity, "rb") as f:
+        for _ in range(size // (1 << 20)):
+            digest.update(f.read(1 << 20))
+        digest.update(f.read(size % (1 << 20)))
+    assert digest.hexdigest() == helpers.sha256_file(ext4)
+
+
+@pytest.mark.parametrize("image", IMAGES)
+def test_boot_slot_has_the_boot_files(deploy_dir, image):
+    bootfs = image_file(deploy_dir, image, "bootfs.vfat")
     files = helpers.fat_files(bootfs)
-    assert {"kernel_2712.img", "bcm2712-rpi-5-b.dtb", "config.txt",
+    assert {"kernel_2712.img", "bcm2712-rpi-5-b.dtb", "config.txt", "cmdline.txt",
+            "cmdline-A.txt", "cmdline-B.txt",
             "overlays/edgenode-ads1115.dtbo", "overlays/mipi-dbi-spi.dtbo"} <= files
     # The same bytes as the BSP's deployed files.
     assert helpers.fat_read(bootfs, "config.txt") == \
@@ -94,18 +204,19 @@ def test_boot_slot_has_the_boot_files(bootfs, deploy_dir):
     ("edgenode-bundle", "edgenode-image"),
     ("edgenode-bundle-dev", "edgenode-image-dev"),
 ])
-def test_bundle_carries_this_builds_slots(deploy_dir, bootfs, bundle, image):
+def test_bundle_carries_this_builds_slots(deploy_dir, bundle, image):
     manifest = helpers.bundle_manifest(deploy_dir / f"{bundle}-raspberrypi5.raucb")
     assert manifest["update"]["compatible"] == "edgenode-raspberrypi5"
     assert manifest["bundle"]["format"] == "verity"
     assert set(manifest) == {"update", "bundle", "image.rootfs", "image.bootfs"}
 
     rootfs, boot = manifest["image.rootfs"], manifest["image.bootfs"]
-    assert rootfs["filename"] == "rootfs.ext4"
+    assert rootfs["filename"] == "rootfs.img"
     assert boot["filename"] == "bootfs.vfat"
-    # Byte for byte what the SD card image's slot A has.
-    assert rootfs["sha256"] == helpers.sha256_file(helpers.Image(deploy_dir, image).ext4)
-    assert boot["sha256"] == helpers.sha256_file(bootfs)
+    # Byte for byte what the SD card image's slot A has: the verity root
+    # filesystem and the boot slot image with its root hash.
+    assert rootfs["sha256"] == helpers.sha256_file(image_file(deploy_dir, image, "verity"))
+    assert boot["sha256"] == helpers.sha256_file(image_file(deploy_dir, image, "bootfs.vfat"))
     assert int(boot["size"]) == LAYOUT[1][2]
 
 
@@ -126,9 +237,17 @@ def test_rauc_system_configuration(prod):
     lines = {line.strip() for line in prod.read_file("/usr/lib/rauc/system.conf").splitlines()}
     assert {"compatible=edgenode-raspberrypi5", "bootloader=custom",
             "bootloader-custom-backend=/usr/bin/edgenode-boot",
-            "bundle-formats=verity", "check-purpose=codesign"} <= lines
+            "bundle-formats=verity", "check-purpose=codesign",
+            "mountprefix=/run/rauc"} <= lines
     assert {"device=/dev/mmcblk0p4", "device=/dev/mmcblk0p5",
             "device=/dev/mmcblk0p2", "device=/dev/mmcblk0p3"} <= lines
+
+
+def test_images_run_from_a_read_only_root(prod, dev):
+    # read-only-rootfs: sshd makes its host keys in /var/run at each boot,
+    # since /etc cannot be written.
+    for image in (prod, dev):
+        assert "sshd_config_readonly" in image.read_file("/etc/default/ssh")
 
 
 def test_hardware_watchdog_configured(prod):

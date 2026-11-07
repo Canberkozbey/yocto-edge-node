@@ -2,7 +2,9 @@
 
 How the Raspberry Pi 5 node is updated, and what to do by hand: signing
 keys, building, writing a card, installing a bundle. The design and its
-reasons are in [ADR 0008](adr/0008-ab-updates-with-rauc-and-tryboot.md).
+reasons are in [ADR 0008](adr/0008-ab-updates-with-rauc-and-tryboot.md);
+the read-only root filesystem verified by dm-verity in
+[ADR 0009](adr/0009-read-only-root-with-dm-verity.md).
 
 ## Signing keys (once per build host)
 
@@ -47,6 +49,9 @@ The deploy directory (`tmp/deploy/images/raspberrypi5/`) then has:
 | `edgenode-image-dev-raspberrypi5.rootfs.wic.bz2` and `.wic.bmap` | The same with the development image |
 | `edgenode-bundle-raspberrypi5.raucb` | Update bundle: the production image |
 | `edgenode-bundle-dev-raspberrypi5.raucb` | Update bundle: the development image (tests) |
+| `<image>-raspberrypi5.rootfs.verity` | The root filesystem with its dm-verity hash tree: what a slot holds |
+| `<image>-raspberrypi5.rootfs.verity.env` | Its verity parameters, root hash included |
+| `<image>-raspberrypi5.rootfs.bootfs.vfat` | The boot slot image whose command lines carry that root hash |
 
 ## Writing a card
 
@@ -88,8 +93,12 @@ journalctl -u edgenode-boot-commit
 ```
 
 If edgenoded does not come up within 60 seconds of a trial boot, the slot
-is marked bad and the board reboots into the previous one. `rauc status`
-then shows the new slot as bad.
+is marked bad and the board reboots into the previous one. The same happens
+when the trial boot never gets that far: a kernel that cannot mount a root
+filesystem failing verification panics and reboots, and after a power cut
+the firmware starts the previous slot anyway. Back there,
+`edgenode-boot-commit` marks the slot whose trial did not report back.
+`rauc status` then shows the new slot as bad.
 
 | Command | What it does |
 | --- | --- |
@@ -100,6 +109,14 @@ then shows the new slot as bad.
 
 Marking the booted, committed slot bad is refused: it is the only slot
 known to work.
+
+## Read-only root
+
+`/` is the dm-verity device `vroot` over the booted slot's partition,
+mounted read-only: nothing on it changes, not even as root. Logs and other
+state are on tmpfs and gone after a reboot; what must survive goes to
+`/data`. SSH host keys are made at each boot, so clients see a new host key
+after every reboot (persistent keys on `/data` come with stage 4).
 
 ## The tests
 

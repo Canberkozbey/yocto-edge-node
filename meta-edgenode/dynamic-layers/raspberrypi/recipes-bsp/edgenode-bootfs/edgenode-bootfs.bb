@@ -1,9 +1,10 @@
-SUMMARY = "Boot slot and autoboot partition images for the Raspberry Pi 5"
-DESCRIPTION = "The FAT image of one boot slot (firmware configuration, \
-kernel, device trees, overlays, one kernel command line per slot), made from \
-the BSP's boot files, and the small first partition whose autoboot.txt \
-selects the slot. The SD card image and the RAUC update bundles use the same \
-boot slot image (docs/adr/0008)."
+SUMMARY = "Boot slot template and autoboot partition images for the Raspberry Pi 5"
+DESCRIPTION = "The FAT image of a boot slot (firmware configuration, kernel, \
+device trees, overlays), made from the BSP's boot files, and the small first \
+partition whose autoboot.txt selects the slot. Each image adds its kernel \
+command lines, which carry its root filesystem's root hash \
+(edgenode-verity.bbclass); the SD card image and the RAUC update bundles use \
+that boot slot image (docs/adr/0008, docs/adr/0009)."
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 
@@ -24,10 +25,6 @@ DEPENDS = "dosfstools-native mtools-native"
 EDGENODE_BOOTFS_SIZE ?= "131072"
 EDGENODE_AUTOBOOT_SIZE ?= "16384"
 
-# The root filesystem partition of each slot (the same layout).
-EDGENODE_ROOT_A ?= "/dev/mmcblk0p4"
-EDGENODE_ROOT_B ?= "/dev/mmcblk0p5"
-
 # The boot files: what the BSP's own SD card image would contain
 # (IMAGE_BOOT_FILES, conf/machine/include/rpi-base.inc in meta-raspberrypi,
 # plus our overlay from kas/machine/raspberrypi5.yml), from the same deploy
@@ -37,7 +34,7 @@ do_compile[depends] += " \
     rpi-bootfiles:do_deploy \
     edgenode-dt-overlays:do_deploy \
 "
-do_compile[vardeps] += "IMAGE_BOOT_FILES EDGENODE_ROOT_A EDGENODE_ROOT_B"
+do_compile[vardeps] += "IMAGE_BOOT_FILES"
 do_compile[cleandirs] = "${B}"
 
 # Copies the boot files into ${B}/bootfs, read the way wic's
@@ -70,21 +67,6 @@ python do_compile() {
             bb.fatal("IMAGE_BOOT_FILES installs %s twice" % dst)
         bb.utils.mkdirhier(os.path.dirname(target))
         shutil.copyfile(src, target)
-
-    # One kernel command line per slot: its own root filesystem, and the
-    # slot's name for RAUC. config.txt picks the file by the partition the
-    # firmware booted from (kas/machine/raspberrypi5.yml). cmdline.txt
-    # stays as built, for firmware without that support and for network
-    # boot (tools/netboot.py rewrites it).
-    with open(os.path.join(stage, 'cmdline.txt')) as f:
-        cmdline = f.read().split()
-    if not [arg for arg in cmdline if arg.startswith('root=')]:
-        bb.fatal("cmdline.txt has no root= argument: %s" % ' '.join(cmdline))
-    for slot in ('A', 'B'):
-        root = 'root=' + d.getVar('EDGENODE_ROOT_' + slot)
-        args = [root if arg.startswith('root=') else arg for arg in cmdline]
-        with open(os.path.join(stage, 'cmdline-%s.txt' % slot), 'w') as f:
-            f.write(' '.join(args + ['rauc.slot=' + slot]) + '\n')
 
     bb.build.exec_func('edgenode_make_images', d)
 }

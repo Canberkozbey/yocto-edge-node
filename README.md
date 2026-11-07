@@ -4,10 +4,10 @@ A small but complete embedded Linux product setup: a secure, remotely
 updatable industrial edge node built with the Yocto Project, with builds and
 tests that run automatically, in QEMU and on real hardware.
 
-> **Status:** Stages 1 (layer, pinned build, QEMU, CI) and 2 (Raspberry Pi 5
-> hardware-in-the-loop) done, as are the dev/prod split and license policy
-> from stage 4. Stage 3 (A/B updates) in progress: RAUC with A/B slots and
-> rollback is in; dm-verity is next.
+> **Status:** Stages 1 (layer, pinned build, QEMU, CI), 2 (Raspberry Pi 5
+> hardware-in-the-loop) and 3 (A/B updates with rollback, read-only root
+> verified by dm-verity) done, as are the dev/prod split and license policy
+> from stage 4.
 
 ## What is here
 
@@ -51,7 +51,7 @@ reuse shared state and take minutes.
 | Machine | kas file | Used for |
 | --- | --- | --- |
 | `qemuarm64` | `kas/machine/qemuarm64.yml` | CI on every push; boots without hardware |
-| `raspberrypi5` | `kas/machine/raspberrypi5.yml` | Hardware target: boots from an SD card with A/B slots and updates through RAUC; serial console on the 40-pin header (GPIO14/15) |
+| `raspberrypi5` | `kas/machine/raspberrypi5.yml` | Hardware target: boots from an SD card with A/B slots, a read-only root verified by dm-verity, updates through RAUC; serial console on the 40-pin header (GPIO14/15) |
 
 The Raspberry Pi 5 build also makes signed update bundles. Their keys stay
 outside the repository: create development keys once with
@@ -94,7 +94,7 @@ on the Raspberry Pi 5 with a different environment file.
 | --- | --- | --- |
 | `tests/dev` | development image | logs in as root on the console |
 | `tests/prod` | production image | no login possible: console prompts and forwarded ports only |
-| `tests/image` | both images, not booted | package manifests and files read from the ext4 images with `debugfs`; on the Raspberry Pi 5 also the SD card layout, boot partitions and update bundles |
+| `tests/image` | both images, not booted | package manifests and files read from the ext4 images with `debugfs`; on the Raspberry Pi 5 also the SD card layout, boot partitions, dm-verity hash trees and update bundles |
 | `tests/update` | development image on the Raspberry Pi 5's SD card | writes the card, then installs updates, rolls back and cuts the power |
 
 ```sh
@@ -164,10 +164,13 @@ What the tests check:
   hardware tests carry labgrid's `lg_feature` marker and are skipped where
   the environment lacks that hardware
 - on the Raspberry Pi 5, the SD card image has the A/B layout, each boot
-  slot names its own root filesystem, and each update bundle carries this
-  build's slots byte for byte; on the board, an update boots on trial and
-  is committed, a power cut before the trial boot or during installation
-  keeps the running slot, a release whose service fails rolls itself back,
+  slot names its own root filesystem with this image's dm-verity root hash,
+  each root filesystem's hash tree checks out against that hash, and each
+  update bundle carries this build's slots byte for byte; on the board, the
+  root filesystem is the verity device and cannot be written, an update
+  boots on trial and is committed, a power cut before the trial boot or
+  during installation keeps the running slot, a release whose service fails
+  and a root filesystem changed by one block both roll back by themselves,
   bundles with a broken signature or payload are rejected, and the hardware
   watchdog resets a hung kernel
 
@@ -190,8 +193,8 @@ as build artifacts.
 
 Runner host requirements: Docker, kas (with `kas-container` on `PATH`),
 `qemu-system-arm`, `python3-venv`, `mosquitto` (the tests start their
-own broker; the system service can stay off), `mtools` and
-`squashfs-tools`, and the update signing keys in `~/yocto/keys`
+own broker; the system service can stay off), `mtools`, `squashfs-tools`
+and `cryptsetup-bin`, and the update signing keys in `~/yocto/keys`
 ([docs/updates.md](docs/updates.md)).
 
 ## Design notes
@@ -220,6 +223,11 @@ own broker; the system service can stay off), `mtools` and
   by our own RAUC backend; a health check commits a new slot or rolls it
   back; signed verity bundles, keys outside the repository.
   Details: [ADR 0008](docs/adr/0008-ab-updates-with-rauc-and-tryboot.md).
+- **Read-only root filesystem verified by dm-verity, without an
+  initramfs.** Each image hashes itself at build time and writes the root
+  hash into its boot slot's command lines; the kernel sets the verity device
+  up from `dm-mod.create=`. Details:
+  [ADR 0009](docs/adr/0009-read-only-root-with-dm-verity.md).
 
 ## Roadmap
 

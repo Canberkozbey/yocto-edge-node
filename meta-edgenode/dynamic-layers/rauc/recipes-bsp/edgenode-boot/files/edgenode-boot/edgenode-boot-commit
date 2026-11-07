@@ -15,6 +15,10 @@
 #   for one boot only).
 # - Not healthy on the committed slot: there is nothing known to work to go
 #   back to. The service's own restarts and the logs take it from there.
+#
+# First, a trial boot of the other slot that never got this far (power cut,
+# hang, kernel panic, a root filesystem that fails verification) is recorded:
+# that slot is marked bad, so `rauc status` tells the truth.
 
 READY_TIMEOUT=60
 STABLE_SECONDS=15
@@ -41,6 +45,11 @@ healthy() {
 }
 
 slot=$(edgenode-boot get-current) || exit 1
+
+if failed=$(edgenode-boot failed-trial); then
+	echo "slot $failed did not finish its trial boot; marking it bad" >&2
+	rauc status mark-bad other
+fi
 
 if healthy; then
 	echo "slot $slot is healthy"

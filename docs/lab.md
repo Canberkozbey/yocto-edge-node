@@ -116,7 +116,7 @@ filesystem under a running system breaks it.
 ## Build host setup (once)
 
 ```sh
-sudo apt install dnsmasq nfs-kernel-server mtools squashfs-tools zstd
+sudo apt install dnsmasq nfs-kernel-server mtools squashfs-tools cryptsetup-bin zstd
 sudo mkdir -p /srv/edgenode/tftp /srv/edgenode/nfs /etc/exports.d
 sudo cp lab/dnsmasq.d/edgenode.conf /etc/dnsmasq.d/
 sudo cp lab/exports.d/edgenode.exports /etc/exports.d/
@@ -132,8 +132,9 @@ configuration turns DNS off (`port=0`), so the restart above succeeds.
 dnsmasq as the host's DNS resolver, which would point the host at a DNS
 server that is turned off.
 `journalctl -u dnsmasq -f` shows each DHCP exchange and TFTP transfer.
-mtools also reads the boot partitions for the image tests, and
-squashfs-tools reads the update bundles' manifests.
+mtools also reads the boot partitions for the image tests, squashfs-tools
+reads the update bundles' manifests, and cryptsetup-bin's `veritysetup`
+checks the root filesystems against their root hashes.
 
 The Raspberry Pi 5 build signs update bundles with keys kept outside the
 repository; create them once with `tools/make-dev-keys.sh`

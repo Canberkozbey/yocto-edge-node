@@ -21,8 +21,7 @@ do_install() {
         BINDIR=${bindir} \
         LIBEXECDIR=${libexecdir} \
         UNITDIR=${systemd_system_unitdir} \
-        GENERATORDIR=${systemd_unitdir}/system-generators \
-        TMPFILESDIR=${nonarch_libdir}/tmpfiles.d
+        GENERATORDIR=${systemd_unitdir}/system-generators
 }
 
 # The units are not enabled: edgenode-boot-generator adds them to boots from
@@ -31,7 +30,6 @@ do_install() {
 FILES:${PN} += " \
     ${systemd_system_unitdir} \
     ${systemd_unitdir}/system-generators \
-    ${nonarch_libdir}/tmpfiles.d \
     /data \
 "
 

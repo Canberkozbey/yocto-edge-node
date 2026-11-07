@@ -1,2 +1,0 @@
-# RAUC's data directory (system.conf) and edgenode-boot's bad marks.
-d /data/rauc 0700 root root -

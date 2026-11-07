@@ -395,15 +395,24 @@ static int tryboot_set(int armed)
 	return mailbox(MBOX_TAG_SET_REBOOT_FLAGS, &flags);
 }
 
-/* --- bad marks --------------------------------------------------------- */
+/* --- marks ------------------------------------------------------------ */
 
-/* Each slot marked bad has an empty file <state>/bad-<slot>. The marks are
- * what `rauc status` shows; booting itself is controlled only by
- * autoboot.txt and the tryboot flag. */
+/* Empty files in the state directory, one per slot and kind:
+ *
+ *   bad-<slot>    the slot is marked bad: what `rauc status` shows
+ *   trial-<slot>  the slot is armed for a trial boot whose outcome nobody
+ *                 has recorded yet
+ *
+ * Booting itself is controlled only by autoboot.txt and the tryboot flag.
+ * A trial mark still there when the other slot runs means the trial boot
+ * never got as far as the commit service: power cut, hang, panic. */
 
-static void mark_path(char *path, size_t len, enum slot s)
+enum mark { MARK_BAD, MARK_TRIAL };
+
+static void mark_path(char *path, size_t len, enum mark kind, enum slot s)
 {
-	snprintf(path, len, "%s/bad-%c", cfg.state, slot_name(s));
+	snprintf(path, len, "%s/%s-%c", cfg.state, kind == MARK_BAD ? "bad" : "trial",
+		 slot_name(s));
 }
 
 static int sync_state_dir(void)
@@ -420,15 +429,15 @@ static int sync_state_dir(void)
 	return ret;
 }
 
-static int is_marked_bad(enum slot s)
+static int is_marked(enum mark kind, enum slot s)
 {
 	char path[512];
 
-	mark_path(path, sizeof(path), s);
+	mark_path(path, sizeof(path), kind, s);
 	return access(path, F_OK) == 0;
 }
 
-static int mark_bad(enum slot s)
+static int mark(enum mark kind, enum slot s)
 {
 	char path[512];
 	int fd;
@@ -437,7 +446,7 @@ static int mark_bad(enum slot s)
 		err("%s: %s", cfg.state, strerror(errno));
 		return -1;
 	}
-	mark_path(path, sizeof(path), s);
+	mark_path(path, sizeof(path), kind, s);
 	fd = open(path, O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
 	if (fd < 0) {
 		err("%s: %s", path, strerror(errno));
@@ -447,11 +456,11 @@ static int mark_bad(enum slot s)
 	return sync_state_dir();
 }
 
-static int clear_bad(enum slot s)
+static int unmark(enum mark kind, enum slot s)
 {
 	char path[512];
 
-	mark_path(path, sizeof(path), s);
+	mark_path(path, sizeof(path), kind, s);
 	if (unlink(path) < 0) {
 		if (errno == ENOENT)
 			return 0;
@@ -483,18 +492,22 @@ static int cmd_get_primary(void)
 static int cmd_set_primary(enum slot slot)
 {
 	struct autoboot ab;
+	int trial;
 
 	if (autoboot_open(&ab, 0))
 		return 1;
 	autoboot_close(&ab);
-	if (tryboot_set(slot != ab.default_slot))
+	trial = slot != ab.default_slot;
+	if (tryboot_set(trial))
 		return 1;
-	return clear_bad(slot) ? 1 : 0;
+	if (trial ? mark(MARK_TRIAL, slot) : unmark(MARK_TRIAL, other(slot)))
+		return 1;
+	return unmark(MARK_BAD, slot) ? 1 : 0;
 }
 
 static int cmd_get_state(enum slot slot)
 {
-	printf("%s\n", is_marked_bad(slot) ? "bad" : "good");
+	printf("%s\n", is_marked(MARK_BAD, slot) ? "bad" : "good");
 	return 0;
 }
 
@@ -511,11 +524,15 @@ static int cmd_set_state(enum slot slot, const char *state)
 	if (autoboot_open(&ab, 1))
 		return 1;
 
+	/* Either way, the outcome of any trial of this slot is now recorded. */
+	if (unmark(MARK_TRIAL, slot))
+		goto out;
+
 	if (strcmp(state, "good") == 0) {
 		/* Committing the booted slot after its trial boot. */
 		if (slot == booted && autoboot_set_default(&ab, slot))
 			goto out;
-		ret = clear_bad(slot) ? 1 : 0;
+		ret = unmark(MARK_BAD, slot) ? 1 : 0;
 		goto out;
 	}
 
@@ -536,7 +553,7 @@ static int cmd_set_state(enum slot slot, const char *state)
 		/* No trial boot of a slot that is bad or being written. */
 		goto out;
 	}
-	ret = mark_bad(slot) ? 1 : 0;
+	ret = mark(MARK_BAD, slot) ? 1 : 0;
 out:
 	autoboot_close(&ab);
 	return ret;
@@ -552,6 +569,21 @@ static int cmd_get_current(void)
 	}
 	printf("%c\n", slot_name(booted));
 	return 0;
+}
+
+/* Prints the slot whose trial boot ended without a verdict, exit status 0;
+ * exit status 1 when there is none. */
+static int cmd_failed_trial(void)
+{
+	enum slot booted = booted_slot();
+
+	for (enum slot s = SLOT_A; s <= SLOT_B; s++) {
+		if (s != booted && is_marked(MARK_TRIAL, s)) {
+			printf("%c\n", slot_name(s));
+			return 0;
+		}
+	}
+	return 1;
 }
 
 /* Exit status 0 when the booted slot is on trial (not yet the default). */
@@ -588,7 +620,8 @@ static int cmd_status(void)
 		       slot_name(armed ? other(ab.default_slot) : ab.default_slot),
 		       armed ? " (trial)" : "");
 	for (enum slot s = SLOT_A; s <= SLOT_B; s++)
-		printf("slot %c:   %s\n", slot_name(s), is_marked_bad(s) ? "bad" : "good");
+		printf("slot %c:   %s%s\n", slot_name(s), is_marked(MARK_BAD, s) ? "bad" : "good",
+		       is_marked(MARK_TRIAL, s) ? ", trial pending" : "");
 	return 0;
 }
 
@@ -606,11 +639,12 @@ static void usage(FILE *out)
 		"Other commands:\n"
 		"  status                   summary of the above\n"
 		"  is-trial                 exit status 0 if the booted slot is on trial\n"
+		"  failed-trial             print a slot whose trial boot ended without a verdict\n"
 		"\n"
 		"Options:\n"
 		"  --autoboot DEVICE        FAT partition with autoboot.txt (%s)\n"
 		"  --bootloader DIRECTORY   firmware boot information (%s)\n"
-		"  --state DIRECTORY        bad marks (%s)\n"
+		"  --state DIRECTORY        bad and trial marks (%s)\n"
 		"  --mailbox DEVICE         firmware mailbox (%s)\n",
 		cfg.autoboot, cfg.bootloader, cfg.state, cfg.mailbox);
 }
@@ -673,6 +707,8 @@ int main(int argc, char **argv)
 		return cmd_get_current();
 	if (!strcmp(cmd, "is-trial"))
 		return cmd_is_trial();
+	if (!strcmp(cmd, "failed-trial"))
+		return cmd_failed_trial();
 	if (!strcmp(cmd, "status"))
 		return cmd_status();
 	err("unknown command '%s'", cmd);

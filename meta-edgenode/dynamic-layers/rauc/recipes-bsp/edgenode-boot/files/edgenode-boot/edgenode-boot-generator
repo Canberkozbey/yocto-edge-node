@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: MIT
 #
 # systemd generator: on boots from an A/B slot (rauc.slot= on the kernel
-# command line) adds the data partition's mount and the slot commit to the
-# boot (docs/adr/0008-ab-updates-with-rauc-and-tryboot.md).
+# command line) adds the data partition's mount, the directories on it and
+# the slot commit to the boot (docs/adr/0008-ab-updates-with-rauc-and-tryboot.md).
 #
 # Other boots (network boot in the lab) leave both units out of the boot
 # entirely. Enabling them statically with a condition is not enough: systemd
@@ -19,6 +19,7 @@ case " $cmdline " in
 	units=/usr/lib/systemd/system
 	mkdir -p "$1/local-fs.target.wants" "$1/multi-user.target.wants"
 	ln -sf "$units/data.mount" "$1/local-fs.target.wants/data.mount"
+	ln -sf "$units/edgenode-data.service" "$1/local-fs.target.wants/edgenode-data.service"
 	ln -sf "$units/edgenode-boot-commit.service" \
 		"$1/multi-user.target.wants/edgenode-boot-commit.service"
 	;;

@@ -75,10 +75,12 @@ local_conf_header:
     # wic.bz2 and its bmap: the SD card image, written with bmaptool; its
     # slot A boot partition also supplies the network boot files
     # (tools/netboot.py). tar.zst: the root filesystem served over NFS for
-    # network boot. ext4: the root filesystem alone, which goes into slot A
-    # and the update bundles, and which tests/image reads. The BSP default
-    # also builds tar.bz2 and ext3, which nothing here uses.
-    IMAGE_FSTYPES = "wic.bz2 wic.bmap tar.zst ext4"
+    # network boot. ext4: the root filesystem alone, which tests/image reads.
+    # verity: the ext4 with its dm-verity hash tree, which goes into slot A
+    # and the update bundles, and the boot slot image that boots it
+    # (edgenode-verity.bbclass). The BSP default also builds tar.bz2 and
+    # ext3, which nothing here uses.
+    IMAGE_FSTYPES = "wic.bz2 wic.bmap tar.zst ext4 verity"
 
   raspberrypi5-ab-updates: |
     # A/B updates with RAUC (docs/adr/0008). The SD card has an autoboot
@@ -87,22 +89,33 @@ local_conf_header:
     # slot, through our RAUC backend (edgenode-boot).
     DISTRO_FEATURES:append = " rauc"
     WKS_FILE = "sdimage-raspberrypi5-ab.wks.in"
-    # The boot slot and autoboot partition images (edgenode-bootfs); slot A
-    # is a copy of the image's own ext4, so that is built first.
+    # The autoboot partition image (edgenode-bootfs); slot A gets the
+    # image's verity root filesystem and boot slot image, built first.
     WKS_FILE_DEPENDS:append = " edgenode-bootfs"
-    IMAGE_TYPEDEP:wic:append = " ext4"
+    IMAGE_TYPEDEP:wic:append = " verity"
     # Each slot boots its own root filesystem, through its own kernel
-    # command line (edgenode-bootfs), which config.txt picks by the partition
-    # the firmware booted from (bootloader EEPROM 2025-03-10 or later).
-    # cmdline.txt, the fallback, mounts slot A. A kernel panic reboots after
-    # 10 s, which ends a failed trial boot.
+    # command line (edgenode-verity.bbclass), which config.txt picks by the
+    # partition the firmware booted from (bootloader EEPROM 2025-03-10 or
+    # later). cmdline.txt, the fallback, mounts slot A without dm-verity. A
+    # kernel panic reboots after 10 s, which ends a failed trial boot.
     CMDLINE_ROOT_PARTITION = "/dev/mmcblk0p4"
     CMDLINE:append:pn-rpi-cmdline = " panic=10"
     RPI_EXTRA_CONFIG:append = "\n[boot_partition=2]\ncmdline=cmdline-A.txt\n[boot_partition=3]\ncmdline=cmdline-B.txt\n[all]"
     # RAUC with its slot configuration and keyring, our backend and commit
-    # service, and the kernel modules that verity bundles are mounted with
-    # (dm-verity, squashfs; loop devices are built in).
-    CORE_IMAGE_EXTRA_INSTALL:append = " rauc edgenode-boot kernel-module-dm-verity kernel-module-squashfs"
+    # service, and the kernel module that bundles are mounted with
+    # (squashfs; device mapper with dm-verity and loop devices are built in).
+    CORE_IMAGE_EXTRA_INSTALL:append = " rauc edgenode-boot kernel-module-squashfs"
+
+  raspberrypi5-verity-root: |
+    # Read-only root filesystem, verified by dm-verity (docs/adr/0009).
+    # edgenode-verity.bbclass hashes each image and writes the root hash into
+    # its boot slot image's command lines; the kernel (dm-verity built in,
+    # meta-edgenode/dynamic-layers/raspberrypi/recipes-kernel) sets the
+    # verity device up before user space starts. read-only-rootfs makes the
+    # image run read-only: logs and other state on tmpfs, SSH host keys made
+    # at each boot.
+    IMAGE_CLASSES += "edgenode-verity"
+    IMAGE_FEATURES:append = " read-only-rootfs"
 
   raspberrypi5-wired-only: |
     # The node uses wired Ethernet only (docs/adr/0003). Switch both radios

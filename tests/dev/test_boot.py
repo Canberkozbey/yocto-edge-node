@@ -40,7 +40,7 @@ def test_sd_card_slot_units_stay_out_of_other_boots(shell):
         pytest.skip("no A/B update system in this image")
     if "rauc.slot=" in shell.run_check("cat /proc/cmdline")[0]:
         pytest.skip("booted from an A/B slot")
-    for unit in ("data.mount", "edgenode-boot-commit.service"):
+    for unit in ("data.mount", "edgenode-data.service", "edgenode-boot-commit.service"):
         never_started = shell.run_check(
             f"systemctl show --property=ConditionTimestampMonotonic --value {unit}")
         assert never_started == ["0"], unit

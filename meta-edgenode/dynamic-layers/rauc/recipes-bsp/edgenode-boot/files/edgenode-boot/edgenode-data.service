@@ -1,0 +1,17 @@
+# Creates RAUC's data directory on the data partition (system.conf), right
+# after the partition is mounted and before any ordinary service starts. A
+# tmpfiles.d entry would run on every boot, and fail on a read-only root
+# filesystem when the partition is not mounted. Added to boots from an A/B
+# slot only, by edgenode-boot-generator.
+[Unit]
+Description=Directories on the persistent data partition
+DefaultDependencies=no
+Requires=data.mount
+After=data.mount
+Before=local-fs.target
+ConditionKernelCommandLine=rauc.slot
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/mkdir -p -m 0700 /data/rauc

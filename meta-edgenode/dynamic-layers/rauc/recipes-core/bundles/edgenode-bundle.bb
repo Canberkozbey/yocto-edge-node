@@ -1,7 +1,8 @@
 SUMMARY = "Edge node update bundle"
-DESCRIPTION = "RAUC bundle with the production image's root filesystem and \
-the boot slot image: what an A/B update installs into the slot that is not \
-running (docs/adr/0008)."
+DESCRIPTION = "RAUC bundle with the production image's root filesystem, \
+with its dm-verity hash tree, and the boot slot image that boots it: what an \
+A/B update installs into the slot that is not running (docs/adr/0008, \
+docs/adr/0009)."
 LICENSE = "MIT"
 
 COMPATIBLE_MACHINE = "^raspberrypi5$"
@@ -13,16 +14,17 @@ RAUC_BUNDLE_VERSION = "${DISTRO_VERSION}"
 RAUC_BUNDLE_DESCRIPTION = "${SUMMARY}"
 RAUC_BUNDLE_FORMAT = "verity"
 
-# The image whose root filesystem the bundle carries.
+# The image whose slots the bundle carries; both files come from its verity
+# image type (edgenode-verity.bbclass), since the boot slot's command lines
+# hold that root filesystem's root hash.
 EDGENODE_BUNDLE_IMAGE ?= "edgenode-image"
 
 RAUC_BUNDLE_SLOTS = "rootfs bootfs"
 RAUC_SLOT_rootfs = "${EDGENODE_BUNDLE_IMAGE}"
-RAUC_SLOT_rootfs[fstype] = "ext4"
-RAUC_SLOT_rootfs[rename] = "rootfs.ext4"
-RAUC_SLOT_bootfs = "edgenode-bootfs"
-RAUC_SLOT_bootfs[type] = "file"
-RAUC_SLOT_bootfs[file] = "edgenode-bootfs-${MACHINE}.vfat"
+RAUC_SLOT_rootfs[fstype] = "verity"
+RAUC_SLOT_rootfs[rename] = "rootfs.img"
+RAUC_SLOT_bootfs = "${EDGENODE_BUNDLE_IMAGE}"
+RAUC_SLOT_bootfs[fstype] = "bootfs.vfat"
 RAUC_SLOT_bootfs[rename] = "bootfs.vfat"
 
 # Signed with the development key from the build host (docs/updates.md).

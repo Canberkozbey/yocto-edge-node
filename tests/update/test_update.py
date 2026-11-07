@@ -1,7 +1,11 @@
-"""Update, rollback and recovery on the SD card's A/B slots. The tests run
-in order; each starts where the one before left the board (conftest.py)."""
+"""Update, rollback and recovery on the SD card's A/B slots, and the
+dm-verity root filesystem. The tests run in order; each starts where the one
+before left the board (conftest.py)."""
 
+import os
 import re
+import shutil
+import subprocess
 import time
 
 import pytest
@@ -14,7 +18,7 @@ from slots import (
 # ([boot_partition=N]), which arrived in its 2025-03-10 release.
 EEPROM_MIN_TIMESTAMP = 1740787200  # 2025-03-01 00:00 UTC
 ROOT = {"A": "/dev/mmcblk0p4", "B": "/dev/mmcblk0p5"}
-OTHER = {"A": "B", "B": "A"}
+BOOT = {"A": "/dev/mmcblk0p2", "B": "/dev/mmcblk0p3"}
 REMOTE_BUNDLE = "/tmp/update.raucb"
 
 
@@ -27,6 +31,23 @@ def install(shell, ssh_target, bundle):
 def committed(shell, slot):
     status = boot_status(shell)
     return status["default"] == slot and status["booted"] == slot
+
+
+def verity_root_over(shell):
+    """The partition under the verity device the root filesystem is on, or
+    None when / is not on it."""
+    root = next(line.split() for line in shell.run_check("cat /proc/self/mountinfo")
+                if line.split()[4] == "/")
+    if shell.run("test -e /sys/block/dm-0")[2] != 0:
+        return None
+    if root[2] != shell.run_check("cat /sys/block/dm-0/dev")[0]:
+        return None
+    return "/dev/" + shell.run_check("ls /sys/block/dm-0/slaves")[0]
+
+
+def fat_tool(*args, **kwargs):
+    return subprocess.run(args, check=True, capture_output=True,
+                          env={**os.environ, "MTOOLS_SKIP_CHECK": "1"}, **kwargs).stdout
 
 
 def test_bootloader_picks_a_command_line_per_slot(sd_card):
@@ -43,13 +64,29 @@ def test_boots_slot_a_from_the_sd_card(sd_card):
     shell = sd_card
     cmdline = shell.run_check("cat /proc/cmdline")[0].split()
     assert "rauc.slot=A" in cmdline
-    assert f"root={ROOT['A']}" in cmdline
+    assert verity_root_over(shell) == ROOT["A"]
     assert committed(shell, "A")
     assert rauc_status(shell)[0] == "A"
     # The commit service ran and succeeded; the data partition is mounted.
     assert shell.run_check("systemctl is-active edgenode-boot-commit") == ["active"]
     mounts = [line.split() for line in shell.run_check("cat /proc/mounts")]
     assert ["/dev/mmcblk0p6", "/data", "ext4"] in [m[:3] for m in mounts]
+
+
+def test_root_filesystem_is_verified_and_read_only(sd_card):
+    shell = sd_card
+    # / is the dm-verity device, named as the command line names it.
+    assert shell.run_check("cat /sys/block/dm-0/dm/name") == ["vroot"]
+    root = next(line.split() for line in shell.run_check("cat /proc/self/mountinfo")
+                if line.split()[4] == "/")
+    assert "ro" in root[5].split(","), root
+    # Nothing on it can be changed, not even by root.
+    out, _, code = shell.run("touch /usr/lib/edgenode-write-test 2>&1")
+    assert code != 0 and "Read-only" in " ".join(out), out
+    assert shell.run("mount -o remount,rw / 2>&1")[2] != 0
+    # The node's service runs as before; RAUC's state is on /data.
+    assert shell.run_check("systemctl is-active edgenoded") == ["active"]
+    assert shell.run("test -d /data/rauc")[2] == 0
 
 
 def test_hardware_watchdog_is_armed(sd_card):
@@ -72,7 +109,7 @@ def test_update_boots_the_other_slot_on_trial_and_commits_it(target, sd_card, ss
     assert reboot(target, shell) == "B"
     shell = login(target)
     assert booted_slot(shell) == "B"
-    assert f"root={ROOT['B']}" in shell.run_check("cat /proc/cmdline")[0].split()
+    assert verity_root_over(shell) == ROOT["B"]
     # edgenoded came up, so the commit service made B the default.
     assert committed(shell, "B")
     assert rauc_status(shell)[:2] == ("B", "rootfs.1")
@@ -84,23 +121,31 @@ def test_power_cut_before_the_trial_boot_keeps_the_running_slot(target, sd_card,
     assert boot_status(shell)["next"] == "A (trial)"
 
     # The tryboot flag does not survive a power cut: the update is never
-    # booted, and the board stays on the slot it had.
+    # booted, and the board stays on the slot it had. The commit service
+    # records the abandoned trial.
     power_cycle(target)
     shell = login(target)
     assert booted_slot(shell) == "B"
     assert committed(shell, "B")
+    assert rauc_status(shell)[2]["rootfs.0"] == "bad"
 
 
-def test_failed_trial_boot_returns_to_the_previous_slot(target, sd_card, ssh_target, bundle):
+def test_failed_trial_boot_returns_to_the_previous_slot(target, sd_card, ssh_target, bundle,
+                                                        deploy_dir, tmp_path):
     shell = login(target)
     install(shell, ssh_target, bundle)
-    # Break the installed slot the way a bad release would: its edgenoded
-    # exits on start.
-    shell.run_check(f"mount {ROOT['A']} /mnt")
-    shell.run_check("mkdir -p /mnt/etc/systemd/system/edgenoded.service.d")
-    shell.run_check("printf '[Service]\\nExecStart=\\nExecStart=/bin/false\\n' "
-                    "> /mnt/etc/systemd/system/edgenoded.service.d/broken.conf")
-    shell.run_check("umount /mnt")
+    # Make the installed slot behave like a bad release: its edgenoded does
+    # not start. The root filesystem cannot be changed without failing
+    # verification, so the slot's command line masks the service instead:
+    # the same boot slot image as installed, one argument more.
+    boot = tmp_path / "bootfs.vfat"
+    shutil.copyfile(deploy_dir / "edgenode-image-dev-raspberrypi5.rootfs.bootfs.vfat", boot)
+    cmdline = fat_tool("mtype", "-i", str(boot), "::cmdline-A.txt").decode().strip()
+    (tmp_path / "cmdline-A.txt").write_text(cmdline + " systemd.mask=edgenoded.service\n")
+    fat_tool("mcopy", "-o", "-i", str(boot), str(tmp_path / "cmdline-A.txt"), "::cmdline-A.txt")
+    ssh = ssh_target()
+    ssh.put(boot, BOOT["A"])
+    ssh.run_check("sync")
 
     # Trial boot of A; the commit service gives up on edgenoded, marks A bad
     # and reboots, and the firmware starts B again.
@@ -111,6 +156,23 @@ def test_failed_trial_boot_returns_to_the_previous_slot(target, sd_card, ssh_tar
     booted, primary, slots = rauc_status(shell)
     assert (booted, primary) == ("B", "rootfs.1")
     assert slots["rootfs.0"] == "bad"
+
+
+def test_tampered_root_filesystem_is_not_booted(target, sd_card, ssh_target, bundle):
+    shell = login(target)
+    install(shell, ssh_target, bundle)
+    # Change one block of the installed root filesystem, as an attacker with
+    # the card or a failing card would: the first, with the ext4 superblock.
+    shell.run_check(f"dd if=/dev/zero of={ROOT['A']} bs=4096 count=1 2>/dev/null && sync")
+
+    # The trial boot's kernel cannot mount the root filesystem (the block
+    # fails verification), panics and reboots; the firmware starts B again,
+    # and the commit service records the failed trial.
+    assert reboot(target, shell) == "A"
+    assert expect_boot(target) == "B"
+    shell = login(target)
+    assert committed(shell, "B")
+    assert rauc_status(shell)[2]["rootfs.0"] == "bad"
 
 
 def test_power_cut_during_installation_keeps_the_running_slot(target, sd_card, ssh_target, bundle):

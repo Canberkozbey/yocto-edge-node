@@ -35,12 +35,12 @@ A power cut or a watchdog reset clears it as well.
   | 1 | autoboot | 16 MiB | FAT16, `autoboot.txt` only |
   | 2 | bootA | 128 MiB | FAT, slot A's boot files (`bootfs.0`) |
   | 3 | bootB | 128 MiB | FAT, slot B's boot files (`bootfs.1`) |
-  | 4 | rootA | 1 GiB | ext4, slot A's root filesystem (`rootfs.0`) |
-  | 5 | rootB | 1 GiB | ext4, slot B's root filesystem (`rootfs.1`) |
+  | 4 | rootA | 1 GiB | slot A's root filesystem (`rootfs.0`): ext4 and its dm-verity hash tree (ADR 0009) |
+  | 5 | rootB | 1 GiB | slot B's root filesystem (`rootfs.1`), the same |
   | 6 | data | 256 MiB | ext4, `/data`: RAUC's status, the slots' bad marks |
 
   The partition numbers are written down in the wks file, `system.conf`,
-  `edgenode-boot`, `edgenode-bootfs` and `data.mount`.
+  `edgenode-boot`, `edgenode-verity.bbclass` and `data.mount`.
   `tests/image/test_updates.py` checks that the built images agree with
   them.
 - **The firmware chooses the slot.** Committing a slot means rewriting
@@ -68,9 +68,9 @@ A power cut or a watchdog reset clears it as well.
   from (`[boot_partition=N]`, bootloader EEPROM 2025-03-10 or later). Each
   names its own root filesystem and `rauc.slot`. `cmdline.txt` stays as
   the fallback, mounting slot A, and network boot rewrites it.
-  `edgenode-bootfs` builds the boot slot image from the BSP's
-  `IMAGE_BOOT_FILES`, so the slot holds exactly the files the BSP's own
-  image would.
+  `edgenode-bootfs` builds the boot files from the BSP's `IMAGE_BOOT_FILES`,
+  so the slot holds exactly the files the BSP's own image would. Each image
+  adds the two command lines, which carry its root hash (ADR 0009).
 - **A health check decides the commit.** `edgenode-boot-commit` runs after
   each boot from a slot. A systemd generator adds it and the data
   partition's mount only to such boots: had they been enabled with a
@@ -120,7 +120,8 @@ A power cut or a watchdog reset clears it as well.
   3. cuts the power before the trial boot, and the board stays on the old
      slot;
   4. installs a slot whose edgenoded fails, and the board comes back to the
-     previous slot by itself;
+     previous slot by itself, as it does from a slot whose root filesystem
+     fails verification (ADR 0009);
   5. cuts the power during installation, and the board stays on the old
      slot, which is then updated cleanly;
   6. checks that bundles with a broken signature or payload are rejected;
@@ -166,9 +167,10 @@ A power cut or a watchdog reset clears it as well.
 - **Hangs before the watchdog is armed.** A trial boot that hangs before
   systemd starts feeding the watchdog stays hung until a power cycle. That
   power cycle clears the flag and returns to the previous slot.
-- **No secure boot.** Anyone with the SD card can change any slot. Signed
-  bundles protect the update path, and dm-verity (stage 3b) will protect
-  the root filesystem while it runs. Signed boot on the Pi 5 would need its
+- **No secure boot.** Anyone with the SD card can change any slot's boot
+  partition. Signed bundles protect the update path, and dm-verity protects
+  the root filesystem against any change its boot partition does not name
+  (ADR 0009). Signed boot on the Pi 5 would need its
   OTP programmed, which is irreversible and deliberately not done on this
   lab board.
 - **Full images.** Bundles carry whole slot images; delta updates (RAUC's
