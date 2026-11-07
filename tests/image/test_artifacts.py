@@ -81,7 +81,10 @@ def test_edgenoded_config_follows_the_machine(prod, dev):
     # broker: that is deployment configuration (docs/adr/0007).
     for image in (prod, dev):
         settings = edgenoded_settings(image)
-        assert "mqtt_broker" not in settings
+        assert not {"mqtt_broker", "mqtt_ca", "mqtt_cert", "mqtt_key"} & settings.keys()
+        # The broker and the node's identity come from the site's file on
+        # the data partition (docs/adr/0011).
+        assert settings["site_config"] == "/data/edgenode/edgenoded.conf"
         if helpers.MACHINE == "raspberrypi5":
             assert settings.get("adc_device") == "/sys/bus/i2c/devices/1-0048"
             assert {k: v for k, v in settings.items() if k.startswith("channel.")} == {
@@ -91,6 +94,24 @@ def test_edgenoded_config_follows_the_machine(prod, dev):
         else:
             assert "adc_device" not in settings
             assert "display_connector" not in settings
+
+
+def test_site_directory_only_for_the_daemons_group(prod, dev):
+    # edgenoded runs as a dynamic user in the group edgenode-identity, the
+    # only one that reads the site directory on /data, which
+    # edgenoded-site.service sets up where the partition is mounted
+    # (docs/adr/0011).
+    for image in (prod, dev):
+        unit = image.read_file("/usr/lib/systemd/system/edgenoded.service").splitlines()
+        assert {"DynamicUser=yes", "SupplementaryGroups=edgenode-identity",
+                "Wants=edgenoded-site.service"} <= set(unit)
+        groups = {line.split(":")[0]: line.split(":")[3]
+                  for line in image.read_file("/etc/group").splitlines()}
+        assert groups["edgenode-identity"] == ""  # no static member
+        site = image.read_file("/usr/lib/systemd/system/edgenoded-site.service").splitlines()
+        assert "ConditionPathIsMountPoint=/data" in site
+        script = image.read_file("/usr/libexec/edgenoded-site")
+        assert "chown root:edgenode-identity" in script and "chmod 0640" in script
 
 
 def test_device_access_only_for_a_display(prod, dev):

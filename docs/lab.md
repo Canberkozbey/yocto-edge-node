@@ -159,7 +159,10 @@ sudo systemctl disable --now mosquitto
 ```
 
 With a firewall on the host, let the Pi reach that port, for example with
-ufw: `sudo ufw allow from 192.168.1.164 to any port 18830 proto tcp`.
+ufw: `sudo ufw allow from 192.168.1.164 to any port 18830 proto tcp`. The
+MQTT tests over TLS (`tests/dev/test_mqtt_tls.py`, `tests/update`) use the
+same port, one broker at a time, and make their certificates with the
+host's `openssl`.
 
 ## CI access (once)
 

@@ -23,6 +23,8 @@
 #include <unistd.h>
 
 #include <mosquitto.h>
+#include <openssl/ssl.h>
+#include <openssl/x509.h>
 
 #include "log.h"
 #include "mqtt.h"
@@ -41,6 +43,7 @@ struct mqtt {
 	char prefix[96];		/* edgenode/<hostname> */
 	char status_topic[112];
 	char sensors_topic[112];
+	bool tls;
 
 	atomic_bool connected;
 	atomic_bool stopping;
@@ -49,7 +52,8 @@ struct mqtt {
 
 	/* network thread only */
 	long long retry_ms;
-	bool failure_logged;
+	/* a connection failure is logged once, until the next connection */
+	atomic_bool failure_logged;
 };
 
 static long long now_ms(void)
@@ -79,9 +83,9 @@ static void on_connect(struct mosquitto *mosq, void *obj, int rc)
 	}
 	atomic_store(&m->connected, true);
 	m->retry_ms = RETRY_MIN_MS;
-	m->failure_logged = false;
-	log_msg(PRI_INFO, "Connected to MQTT broker %s:%u, publishing under %s/",
-		m->broker, m->port, m->prefix);
+	atomic_store(&m->failure_logged, false);
+	log_msg(PRI_INFO, "Connected to MQTT broker %s:%u%s, publishing under %s/",
+		m->broker, m->port, m->tls ? " over TLS" : "", m->prefix);
 	mosquitto_publish(mosq, NULL, m->status_topic, 6, "online", 1, true);
 }
 
@@ -93,7 +97,7 @@ static void on_disconnect(struct mosquitto *mosq, void *obj, int rc)
 	if (atomic_exchange(&m->connected, false) && rc != 0) {
 		log_msg(PRI_WARN, "Lost MQTT broker %s:%u (%s), reconnecting",
 			m->broker, m->port, mosquitto_strerror(rc));
-		m->failure_logged = true;
+		atomic_store(&m->failure_logged, true);
 	}
 }
 
@@ -107,11 +111,38 @@ static void on_publish(struct mosquitto *mosq, void *obj, int mid)
 
 static void connection_failed(struct mqtt *m, int rc)
 {
-	if (!m->failure_logged)
+	if (!atomic_exchange(&m->failure_logged, true))
 		log_msg(PRI_WARN, "Cannot reach MQTT broker %s:%u (%s), retrying",
 			m->broker, m->port,
 			rc == MOSQ_ERR_ERRNO ? strerror(errno) : mosquitto_strerror(rc));
-	m->failure_logged = true;
+}
+
+/* libmosquitto's own errors say why, such as the reason a TLS handshake
+ * failed; logged with the failure they belong to, so once.
+ *
+ * When the broker's certificate fails verification, OpenSSL's error says
+ * only "certificate verify failed". Which check failed, such as the issuer
+ * or the broker's address, is the connection's verify result, which
+ * libmosquitto still holds while it logs the error; it is added in
+ * brackets. */
+static void on_log(struct mosquitto *mosq, void *obj, int level, const char *str)
+{
+	struct mqtt *m = obj;
+	SSL *ssl;
+	long verify = X509_V_OK;
+
+	if (!(level & MOSQ_LOG_ERR) || atomic_load(&m->failure_logged))
+		return;
+	if (m->tls && strstr(str, "certificate verify failed")) {
+		ssl = mosquitto_ssl_get(mosq);
+		if (ssl)
+			verify = SSL_get_verify_result(ssl);
+	}
+	if (verify != X509_V_OK)
+		log_msg(PRI_WARN, "MQTT: %s (%s)", str,
+			X509_verify_cert_error_string(verify));
+	else
+		log_msg(PRI_WARN, "MQTT: %s", str);
 }
 
 static void *network_thread(void *arg)
@@ -161,8 +192,44 @@ static void *network_thread(void *arg)
 	return NULL;
 }
 
+/* libmosquitto only says "invalid arguments" for a file it cannot open. */
+static int check_readable(const char *path, char *err, size_t err_len)
+{
+	FILE *f = fopen(path, "re");
+
+	if (!f) {
+		snprintf(err, err_len, "cannot read %s: %s", path, strerror(errno));
+		return -1;
+	}
+	fclose(f);
+	return 0;
+}
+
+static int setup_tls(struct mqtt *m, const struct mqtt_tls *tls, char *err, size_t err_len)
+{
+	int rc;
+
+	if (check_readable(tls->ca, err, err_len) < 0 ||
+	    (tls->cert && check_readable(tls->cert, err, err_len) < 0) ||
+	    (tls->key && check_readable(tls->key, err, err_len) < 0))
+		return -1;
+	rc = mosquitto_tls_set(m->mosq, tls->ca, NULL, tls->cert, tls->key, NULL);
+	if (rc == MOSQ_ERR_SUCCESS)
+		/* Verify the broker's certificate and its name; TLS 1.2 or later
+		 * (libmosquitto's default). */
+		rc = mosquitto_tls_opts_set(m->mosq, 1, NULL, NULL);
+	if (rc == MOSQ_ERR_SUCCESS)
+		rc = mosquitto_tls_insecure_set(m->mosq, false);
+	if (rc != MOSQ_ERR_SUCCESS) {
+		snprintf(err, err_len, "cannot set up TLS: %s", mosquitto_strerror(rc));
+		return -1;
+	}
+	m->tls = true;
+	return 0;
+}
+
 struct mqtt *mqtt_start(const char *broker, unsigned short port,
-			char *err, size_t err_len)
+			const struct mqtt_tls *tls, char *err, size_t err_len)
 {
 	char hostname[65] = "";
 	char id[96];
@@ -185,6 +252,7 @@ struct mqtt *mqtt_start(const char *broker, unsigned short port,
 	atomic_init(&m->stopping, false);
 	atomic_init(&m->stop_deadline_ms, 0);
 	atomic_init(&m->last_mid, 0);
+	atomic_init(&m->failure_logged, false);
 	m->retry_ms = RETRY_MIN_MS;
 
 	mosquitto_lib_init();
@@ -195,9 +263,12 @@ struct mqtt *mqtt_start(const char *broker, unsigned short port,
 		goto fail;
 	}
 	mosquitto_threaded_set(m->mosq, true);
+	if (tls && setup_tls(m, tls, err, err_len) < 0)
+		goto fail;
 	mosquitto_connect_callback_set(m->mosq, on_connect);
 	mosquitto_disconnect_callback_set(m->mosq, on_disconnect);
 	mosquitto_publish_callback_set(m->mosq, on_publish);
+	mosquitto_log_callback_set(m->mosq, on_log);
 	rc = mosquitto_will_set(m->mosq, m->status_topic, 7, "offline", 1, true);
 	if (rc != MOSQ_ERR_SUCCESS) {
 		snprintf(err, err_len, "cannot set the MQTT last will: %s", mosquitto_strerror(rc));

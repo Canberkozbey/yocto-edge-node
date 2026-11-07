@@ -17,11 +17,11 @@ gone from one that is quiet.
   meta-openembedded. kas adds meta-oe, meta-python and meta-networking,
   pinned with `kas lock` (ADR 0001). The image gets only the client library
   (`libmosquitto1`); the broker and command-line clients built by the same
-  recipe stay out, and a bbappend drops TLS and websockets from the build
+  recipe stay out, and a bbappend drops websockets from the build
   (ADR 0003).
-- **Plain MQTT 3.1.1 over TCP for now.** TLS needs a CA, device
-  certificates and provisioning; stage 4 brings those together with signed
-  releases, and turns the library's TLS support back on then.
+- **MQTT 3.1.1, plain at first.** TLS needed a CA, device certificates
+  and provisioning. ADR 0011 added them: mutual TLS, with the node's
+  identity on the data partition.
 - **No broker in the image.** Which broker a node talks to belongs to the
   deployment, not the build; `mqtt_broker` is unset in every image, and
   the image tests check it. The tests run their own instance pointed at a
@@ -68,7 +68,7 @@ once by hand, by removing each in turn).
 ## Consequences
 
 - Three more layers to keep pinned and updated with the Yocto release.
-- No authentication or encryption until stage 4: acceptable on the lab
-  network, not for a deployment on a shared network.
+- Plain MQTT has no authentication or encryption: acceptable on the lab
+  network only. A deployment uses TLS (ADR 0011).
 - Two threads in the daemon, sharing only libmosquitto's handle and a few
   atomic flags; checked with ThreadSanitizer.

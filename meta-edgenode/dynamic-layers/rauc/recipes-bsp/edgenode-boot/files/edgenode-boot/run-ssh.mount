@@ -1,0 +1,19 @@
+# The SSH host keys on the persistent data partition: the node keeps its SSH
+# identity across reboots and updates (docs/adr/0011). On the read-only root
+# filesystem, openssh keeps its host keys in /run/ssh
+# (sshd_config_readonly), and sshdgenkeys.service makes them when they are
+# missing: with this mount, once, on the first boot from the card. Added to
+# boots from an A/B slot only, by edgenode-boot-generator; other boots make
+# new keys in /run at each boot.
+[Unit]
+Description=SSH host keys on the persistent data partition
+Requires=edgenode-data.service
+After=edgenode-data.service
+Before=sshdgenkeys.service
+ConditionKernelCommandLine=rauc.slot
+
+[Mount]
+What=/data/ssh
+Where=/run/ssh
+Type=none
+Options=bind

@@ -3,7 +3,8 @@ DESCRIPTION = "edgenode-boot selects the boot slot through the Raspberry Pi \
 firmware's autoboot.txt and its one-shot tryboot flag; RAUC calls it as its \
 custom bootloader backend. After each boot from a slot, \
 edgenode-boot-commit checks the node's service and commits the slot or \
-returns to the previous one. Also mounts the persistent data partition."
+returns to the previous one. Also mounts the persistent data partition and \
+keeps the SSH host keys on it."
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 

@@ -1,0 +1,21 @@
+# The site directory for edgenoded on the data partition: made, and given to
+# the daemon's group only, before the daemon starts (edgenoded-site). Where
+# there is no data partition (network boot, QEMU), the daemon runs on the
+# image's configuration alone.
+[Unit]
+Description=Edge node site directory on the data partition
+ConditionPathIsMountPoint=/data
+After=data.mount
+Before=edgenoded.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/edgenoded-site
+# Root, for the ownership; it needs nothing but the directory.
+ProtectSystem=strict
+ReadWritePaths=/data
+ProtectHome=yes
+PrivateNetwork=yes
+PrivateTmp=yes
+NoNewPrivileges=yes

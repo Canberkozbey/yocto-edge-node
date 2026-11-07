@@ -23,6 +23,7 @@ install: edgenode-boot
 		$(DESTDIR)$(UNITDIR)/edgenode-boot-commit.service
 	install -D -m 0644 data.mount $(DESTDIR)$(UNITDIR)/data.mount
 	install -D -m 0644 edgenode-data.service $(DESTDIR)$(UNITDIR)/edgenode-data.service
+	install -D -m 0644 run-ssh.mount $(DESTDIR)$(UNITDIR)/run-ssh.mount
 	install -D -m 0755 edgenode-boot-generator \
 		$(DESTDIR)$(GENERATORDIR)/edgenode-boot-generator
 	install -d -m 0755 $(DESTDIR)/data

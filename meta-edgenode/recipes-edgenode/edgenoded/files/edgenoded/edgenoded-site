@@ -1,0 +1,22 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+#
+# The site directory on the data partition, /data/edgenode: the site's
+# configuration, which /etc/edgenoded.conf names, and the node's MQTT
+# identity (docs/adr/0011). Runs before edgenoded at each boot that has the
+# partition (edgenoded-site.service).
+#
+# Everything in it belongs to root and the group edgenode-identity, which
+# the daemon runs in; nobody else may read it. Owner and modes are set
+# again at each boot, since the group's number can differ between two
+# images and the partition outlives them, and since provisioning may leave
+# a key readable by root only. Only directories and regular files are
+# touched: a symbolic link is left as it is, so it cannot pass these rights
+# on to a file elsewhere.
+
+set -eu
+
+dir=/data/edgenode
+mkdir -p "$dir"
+find "$dir" -type d -exec chown root:edgenode-identity {} \; -exec chmod 0750 {} \;
+find "$dir" -type f -exec chown root:edgenode-identity {} \; -exec chmod 0640 {} \;

@@ -1,17 +1,21 @@
-"""Update, rollback and recovery on the SD card's A/B slots, and the
-dm-verity root filesystem. The tests run in order; each starts where the one
-before left the board (conftest.py)."""
+"""Update, rollback and recovery on the SD card's A/B slots, the dm-verity
+root filesystem, and the node's identity on the data partition, which
+updates keep. The tests run in order; each starts where the one before left
+the board (conftest.py)."""
 
 import os
 import re
 import shutil
 import subprocess
 import time
+from types import SimpleNamespace
 
 import pytest
 
+from broker import Broker, Pki, Subscriber
 from slots import (
     boot_status, booted_slot, expect_boot, login, power_cycle, rauc_status, reboot,
+    target_option,
 )
 
 # The bootloader EEPROM must pick config.txt sections by boot partition
@@ -20,6 +24,67 @@ EEPROM_MIN_TIMESTAMP = 1740787200  # 2025-03-01 00:00 UTC
 ROOT = {"A": "/dev/mmcblk0p4", "B": "/dev/mmcblk0p5"}
 BOOT = {"A": "/dev/mmcblk0p2", "B": "/dev/mmcblk0p3"}
 REMOTE_BUNDLE = "/tmp/update.raucb"
+
+
+@pytest.fixture(scope="module")
+def site(target, tmp_path_factory):
+    """A TLS broker on the test host that takes only clients with a
+    certificate from its CA, and what a site would provision on a node's
+    data partition for it: the site's configuration, and the node's key and
+    certificates (docs/adr/0011)."""
+    work = tmp_path_factory.mktemp("site")
+    listen = target_option(target, "mqtt_broker_listen")
+    reach = target_option(target, "mqtt_broker_from_target")
+    port = int(target_option(target, "mqtt_broker_port"))
+    fleet = Pki(work, "fleet")
+    broker = Broker(listen, port, work, tls=fleet.issue("broker", "server", [listen, reach]))
+    broker.start()
+    node = fleet.issue("node", "client")
+    config = work / "edgenoded.conf"
+    config.write_text(f"""mqtt_broker = {reach}
+mqtt_port = {port}
+mqtt_interval = 2
+mqtt_ca = /data/edgenode/mqtt/ca.cert.pem
+mqtt_cert = /data/edgenode/mqtt/node.cert.pem
+mqtt_key = /data/edgenode/mqtt/node.key.pem
+""")
+    files = {config: "edgenoded.conf", node.ca: "mqtt/ca.cert.pem",
+             node.cert: "mqtt/node.cert.pem", node.key: "mqtt/node.key.pem"}
+    yield SimpleNamespace(broker=broker, files=files,
+                          dashboard=fleet.issue("dashboard", "client"))
+    broker.stop()
+
+
+def comes_online(shell, site):
+    """A dashboard sees the node's edgenoded online at the site's broker."""
+    prefix = f"edgenode/{shell.run_check('hostname')[0]}"
+    dashboard = Subscriber(site.broker, f"{prefix}/#", tls=site.dashboard)
+    try:
+        return dashboard.wait_for(f"{prefix}/status", lambda p: p == "online", timeout=90)
+    finally:
+        dashboard.close()
+
+
+def connected_over_tls(shell, timeout=90):
+    """This boot's edgenoded logged its connection to the broker over TLS:
+    the broker takes only clients with a certificate from its CA."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if shell.run("journalctl -b -u edgenoded | "
+                     "grep -q 'Connected to MQTT broker .* over TLS'")[2] == 0:
+            return True
+        time.sleep(2)
+    return False
+
+
+def host_keys(shell):
+    return sorted(shell.run_check("cat /run/ssh/*.pub"))
+
+
+def ls_mode(shell, path):
+    """(mode string, owner, group) as ls -ld shows them."""
+    fields = shell.run_check(f"ls -ld {path}")[0].split()
+    return fields[0], fields[2], fields[3]
 
 
 def install(shell, ssh_target, bundle):
@@ -96,7 +161,31 @@ def test_hardware_watchdog_is_armed(sd_card):
     assert int(sd_card.run_check(f"cat {watchdog}/timeout")[0]) <= 15
 
 
-def test_update_boots_the_other_slot_on_trial_and_commits_it(target, sd_card, ssh_target, bundle):
+def test_node_identity_lives_on_the_data_partition(sd_card, ssh_target, site):
+    shell = sd_card
+    # The SSH host keys: made on the card's first boot, on /data.
+    mounts = [line.split() for line in shell.run_check("cat /proc/mounts")]
+    assert ["/dev/mmcblk0p6", "/run/ssh"] in [m[:2] for m in mounts]
+    site.host_keys = host_keys(shell)
+    assert site.host_keys
+
+    # Provisioned as a site might: the key readable by root only. The site
+    # unit gives the daemon's group read access, and nobody else.
+    ssh = ssh_target()
+    ssh.run_check("mkdir -p /data/edgenode/mqtt")
+    for local, remote in site.files.items():
+        ssh.put(local, f"/data/edgenode/{remote}")
+    ssh.run_check("chmod 0600 /data/edgenode/mqtt/node.key.pem && "
+                  "systemctl restart edgenoded-site.service edgenoded.service")
+    assert comes_online(shell, site), "\n".join(shell.run("journalctl -b -u edgenoded")[0])
+    assert connected_over_tls(shell, timeout=10)
+    assert ls_mode(shell, "/data/edgenode") == ("drwxr-x---", "root", "edgenode-identity")
+    assert ls_mode(shell, "/data/edgenode/mqtt/node.key.pem") == \
+        ("-rw-r-----", "root", "edgenode-identity")
+
+
+def test_update_boots_the_other_slot_on_trial_and_commits_it(target, sd_card, ssh_target, bundle,
+                                                             site):
     shell = sd_card
     install(shell, ssh_target, bundle)
     booted, primary, slots = rauc_status(shell)
@@ -113,6 +202,10 @@ def test_update_boots_the_other_slot_on_trial_and_commits_it(target, sd_card, ss
     # edgenoded came up, so the commit service made B the default.
     assert committed(shell, "B")
     assert rauc_status(shell)[:2] == ("B", "rootfs.1")
+    # The node is still itself: the same SSH host keys, and the same MQTT
+    # identity and site configuration, all from /data.
+    assert host_keys(shell) == site.host_keys
+    assert connected_over_tls(shell), "\n".join(shell.run("journalctl -b -u edgenoded")[0])
 
 
 def test_power_cut_before_the_trial_boot_keeps_the_running_slot(target, sd_card, ssh_target, bundle):

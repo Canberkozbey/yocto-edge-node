@@ -1,6 +1,10 @@
 [Unit]
 Description=Edge node daemon
 After=network.target
+# The site's configuration and the node's identity, on the data partition
+# where there is one (docs/adr/0011).
+Wants=edgenoded-site.service
+After=edgenoded-site.service
 
 [Service]
 Type=notify
@@ -11,8 +15,11 @@ RestartSec=2s
 # Liveness: systemd restarts the daemon if it stops sending keep-alives.
 WatchdogSec=30s
 
-# Runs as a transient, unprivileged user that owns nothing on disk.
+# Runs as a transient, unprivileged user that owns nothing on disk. Its
+# group edgenode-identity reads the site's configuration and the node's
+# MQTT key and certificates on /data, which no other account can.
 DynamicUser=yes
+SupplementaryGroups=edgenode-identity
 
 # Sandboxing. `systemd-analyze security edgenoded` scores the result.
 CapabilityBoundingSet=

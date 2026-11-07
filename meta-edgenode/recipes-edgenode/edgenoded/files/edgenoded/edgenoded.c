@@ -47,6 +47,7 @@
 #define CLIENT_TIMEOUT_S 2
 #define SCREEN_PERIOD_MS 1000
 #define DEFAULT_MQTT_PORT     1883
+#define DEFAULT_MQTTS_PORT    8883
 #define DEFAULT_MQTT_INTERVAL 5
 #define MAX_MQTT_INTERVAL     3600
 
@@ -61,8 +62,15 @@ struct config {
 	char display_connector[32];
 	/* MQTT broker, host name or address; "" for none */
 	char mqtt_broker[256];
-	unsigned short mqtt_port;
+	unsigned short mqtt_port;	/* 0: the default, 1883 or 8883 with TLS */
 	unsigned int mqtt_interval_s;
+	/* TLS: the broker's CA certificate ("" for plain MQTT), and the node's
+	 * certificate and key for mutual TLS ("" for none) */
+	char mqtt_ca[PATH_MAX];
+	char mqtt_cert[PATH_MAX];
+	char mqtt_key[PATH_MAX];
+	/* the site's configuration, read after this one; "" for none */
+	char site_config[PATH_MAX];
 };
 
 static volatile sig_atomic_t stop_requested;
@@ -188,12 +196,22 @@ static int add_channel(struct config *cfg, const char *name, const char *value)
 	return 0;
 }
 
+/* An absolute path that fits dst; -1 otherwise. */
+static int set_path(char *dst, size_t size, const char *value)
+{
+	if (value[0] != '/' || strlen(value) >= size)
+		return -1;
+	snprintf(dst, size, "%s", value);
+	return 0;
+}
+
 /*
  * Reads "key = value" lines; '#' starts a comment. A missing file is fine
  * unless it was named explicitly. Unknown keys are reported, not fatal, so
- * a newer config file still works with an older daemon.
+ * a newer config file still works with an older daemon. The site's file
+ * (site) may set everything but site_config.
  */
-static int load_config(const char *path, bool required, struct config *cfg)
+static int load_config(const char *path, bool required, bool site, struct config *cfg)
 {
 	char line[256];
 	unsigned int lineno = 0;
@@ -203,7 +221,10 @@ static int load_config(const char *path, bool required, struct config *cfg)
 	f = fopen(path, "re");
 	if (!f) {
 		if (errno == ENOENT && !required) {
-			log_msg(PRI_INFO, "No config at %s, using defaults", path);
+			if (site)
+				log_msg(PRI_INFO, "No site configuration at %s", path);
+			else
+				log_msg(PRI_INFO, "No config at %s, using defaults", path);
 			return 0;
 		}
 		log_msg(PRI_ERR, "Cannot open %s: %s", path, strerror(errno));
@@ -252,13 +273,12 @@ static int load_config(const char *path, bool required, struct config *cfg)
 			}
 			snprintf(cfg->bind, sizeof(cfg->bind), "%s", value);
 		} else if (strcmp(key, "adc_device") == 0) {
-			if (value[0] != '/' || strlen(value) >= sizeof(cfg->adc_device)) {
+			if (set_path(cfg->adc_device, sizeof(cfg->adc_device), value) < 0) {
 				log_msg(PRI_ERR, "%s:%u: adc_device must be an absolute path",
 					path, lineno);
 				ret = -1;
 				break;
 			}
-			snprintf(cfg->adc_device, sizeof(cfg->adc_device), "%s", value);
 		} else if (strcmp(key, "display_connector") == 0) {
 			if (!display_connector_valid(value) ||
 			    strlen(value) >= sizeof(cfg->display_connector)) {
@@ -303,6 +323,27 @@ static int load_config(const char *path, bool required, struct config *cfg)
 				break;
 			}
 			cfg->mqtt_interval_s = (unsigned int)seconds;
+		} else if (strcmp(key, "mqtt_ca") == 0 || strcmp(key, "mqtt_cert") == 0 ||
+			   strcmp(key, "mqtt_key") == 0) {
+			char *dst = strcmp(key, "mqtt_ca") == 0 ? cfg->mqtt_ca :
+				    strcmp(key, "mqtt_cert") == 0 ? cfg->mqtt_cert : cfg->mqtt_key;
+
+			if (set_path(dst, PATH_MAX, value) < 0) {
+				log_msg(PRI_ERR, "%s:%u: %s must be an absolute path",
+					path, lineno, key);
+				ret = -1;
+				break;
+			}
+		} else if (strcmp(key, "site_config") == 0) {
+			if (site) {
+				log_msg(PRI_WARN, "%s:%u: site_config in the site's own file, ignored",
+					path, lineno);
+			} else if (set_path(cfg->site_config, sizeof(cfg->site_config), value) < 0) {
+				log_msg(PRI_ERR, "%s:%u: site_config must be an absolute path",
+					path, lineno);
+				ret = -1;
+				break;
+			}
 		} else if (strncmp(key, "channel.", 8) == 0) {
 			if (add_channel(cfg, key + 8, value) < 0) {
 				log_msg(PRI_ERR, "%s:%u: invalid or duplicate channel '%s = %s' "
@@ -319,6 +360,51 @@ static int load_config(const char *path, bool required, struct config *cfg)
 
 	fclose(f);
 	return ret;
+}
+
+/* Settings that only make sense together; NULL if they do. */
+static const char *config_problem(const struct config *cfg)
+{
+	if (!cfg->mqtt_cert[0] != !cfg->mqtt_key[0])
+		return "mqtt_cert and mqtt_key go together";
+	if (cfg->mqtt_cert[0] && !cfg->mqtt_ca[0])
+		return "a client certificate (mqtt_cert) needs TLS (mqtt_ca)";
+	return NULL;
+}
+
+/*
+ * The configuration: the product's file, then the site's, which it may
+ * name (site_config) and which overrides it. The site's file holds what the
+ * image cannot know, such as the broker and the node's identity, on
+ * storage that outlives updates. A problem in it is logged and the file
+ * ignored, so the node keeps running on the product's settings; a problem
+ * in the product's file stops the daemon.
+ */
+static int configure(const char *path, bool required, struct config *cfg)
+{
+	struct config site;
+	const char *problem;
+
+	if (load_config(path, required, false, cfg) < 0)
+		return -1;
+	problem = config_problem(cfg);
+	if (problem) {
+		log_msg(PRI_ERR, "%s: %s", path, problem);
+		return -1;
+	}
+	if (cfg->site_config[0]) {
+		site = *cfg;
+		if (load_config(cfg->site_config, false, true, &site) < 0) {
+			log_msg(PRI_ERR, "Ignoring %s: it has errors", cfg->site_config);
+		} else if ((problem = config_problem(&site))) {
+			log_msg(PRI_ERR, "Ignoring %s: %s", cfg->site_config, problem);
+		} else {
+			*cfg = site;
+		}
+	}
+	if (cfg->mqtt_port == 0)
+		cfg->mqtt_port = cfg->mqtt_ca[0] ? DEFAULT_MQTTS_PORT : DEFAULT_MQTT_PORT;
+	return 0;
 }
 
 /* Appends to buf, keeping it terminated; returns -1 once it is full. */
@@ -639,7 +725,6 @@ int main(int argc, char **argv)
 	struct config cfg = {
 		.bind = DEFAULT_BIND,
 		.port = DEFAULT_PORT,
-		.mqtt_port = DEFAULT_MQTT_PORT,
 		.mqtt_interval_s = DEFAULT_MQTT_INTERVAL,
 	};
 	const char *config_path = DEFAULT_CONFIG;
@@ -679,7 +764,7 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	if (load_config(config_path, config_required, &cfg) < 0)
+	if (configure(config_path, config_required, &cfg) < 0)
 		return EXIT_FAILURE;
 	if (port_arg && parse_port(port_arg, &cfg.port) < 0) {
 		log_msg(PRI_ERR, "Invalid port '%s'", port_arg);
@@ -696,14 +781,20 @@ int main(int argc, char **argv)
 	pfd.events = POLLIN;
 
 	if (cfg.mqtt_broker[0]) {
-		char err[256];
+		struct mqtt_tls tls = {
+			.ca = cfg.mqtt_ca,
+			.cert = cfg.mqtt_cert[0] ? cfg.mqtt_cert : NULL,
+			.key = cfg.mqtt_key[0] ? cfg.mqtt_key : NULL,
+		};
+		char err[PATH_MAX + 64];
 
-		mqtt = mqtt_start(cfg.mqtt_broker, cfg.mqtt_port, err, sizeof(err));
-		if (!mqtt) {
-			log_msg(PRI_ERR, "MQTT: %s", err);
-			close(pfd.fd);
-			return EXIT_FAILURE;
-		}
+		/* Without MQTT the node still serves its health and readings,
+		 * so an update can still be committed and the site's settings
+		 * fixed. */
+		mqtt = mqtt_start(cfg.mqtt_broker, cfg.mqtt_port,
+				  cfg.mqtt_ca[0] ? &tls : NULL, err, sizeof(err));
+		if (!mqtt)
+			log_msg(PRI_ERR, "MQTT disabled: %s", err);
 	}
 
 	start_ms = now_ms();
@@ -722,8 +813,10 @@ int main(int argc, char **argv)
 		log_msg(PRI_INFO, "Showing readings on display connector %s",
 			cfg.display_connector);
 	if (mqtt)
-		log_msg(PRI_INFO, "Publishing readings every %u s to MQTT broker %s:%u",
-			cfg.mqtt_interval_s, cfg.mqtt_broker, cfg.mqtt_port);
+		log_msg(PRI_INFO, "Publishing readings every %u s to MQTT broker %s:%u%s%s",
+			cfg.mqtt_interval_s, cfg.mqtt_broker, cfg.mqtt_port,
+			cfg.mqtt_ca[0] ? " over TLS" : "",
+			cfg.mqtt_cert[0] ? " with a client certificate" : "");
 	snprintf(status, sizeof(status),
 		 "READY=1\nSTATUS=Serving health on %s:%u", cfg.bind, cfg.port);
 	notify(status);

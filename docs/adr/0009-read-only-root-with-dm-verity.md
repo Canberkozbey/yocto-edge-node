@@ -124,10 +124,9 @@ that were tested.
   rest needs the Pi 5's signed boot (`boot.img` signed with a key whose hash
   is in OTP). That step is irreversible and deliberately not taken on this
   lab board.
-- **Everything that must persist goes to `/data`.** That is RAUC's status
-  now. SSH host keys are made again at each boot, so clients see a new host
-  key after every reboot. Persistent device identity (host keys, the MQTT
-  client certificate) on `/data` comes with stage 4.
+- **Everything that must persist goes to `/data`:** RAUC's status, and
+  since ADR 0011 the SSH host keys, the site's configuration and the node's
+  MQTT identity.
 - **Configuration changes need a new image.** `/etc` is part of the
   verified root filesystem.
 - **The `cmdline.txt` fallback** for a bootloader without

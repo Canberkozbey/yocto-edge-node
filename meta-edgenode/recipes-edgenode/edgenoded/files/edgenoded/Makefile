@@ -2,19 +2,21 @@
 #
 # Standalone build: `make SPLEEN=/path/to/spleen`, `make install DESTDIR=...`.
 # SPLEEN is a checkout of https://github.com/fcambus/spleen, whose BDF fonts
-# are converted to C at build time (bdf2c.py). Needs libmosquitto.
+# are converted to C at build time (bdf2c.py). Needs libmosquitto and
+# OpenSSL's libssl.
 # The Yocto recipe passes CC, CFLAGS and LDFLAGS through the environment
-# and sets VERSION, SPLEEN, BINDIR and UNITDIR.
+# and sets VERSION, SPLEEN, BINDIR, LIBEXECDIR and UNITDIR.
 
 VERSION  ?= 0.0.0-dev
 PREFIX   ?= /usr
 BINDIR   ?= $(PREFIX)/bin
+LIBEXECDIR ?= $(PREFIX)/libexec
 UNITDIR  ?= $(PREFIX)/lib/systemd/system
 PYTHON   ?= python3
 
 CFLAGS   ?= -O2 -g
 WARNINGS := -Wall -Wextra -Wformat=2 -Wshadow -Wstrict-prototypes
-LDLIBS   := -lmosquitto -pthread -lm
+LDLIBS   := -lmosquitto -lssl -lcrypto -pthread -lm
 
 SRCS     := edgenoded.c log.c sensors.c display.c draw.c screen.c mqtt.c fonts.c
 OBJS     := $(SRCS:.c=.o)
@@ -46,6 +48,8 @@ fonts.o: font.h
 install: edgenoded
 	install -D -m 0755 edgenoded $(DESTDIR)$(BINDIR)/edgenoded
 	install -D -m 0644 edgenoded.service $(DESTDIR)$(UNITDIR)/edgenoded.service
+	install -D -m 0755 edgenoded-site $(DESTDIR)$(LIBEXECDIR)/edgenoded-site
+	install -D -m 0644 edgenoded-site.service $(DESTDIR)$(UNITDIR)/edgenoded-site.service
 
 clean:
 	rm -f edgenoded $(OBJS) fonts.c fonts.c.tmp

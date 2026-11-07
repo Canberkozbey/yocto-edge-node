@@ -266,10 +266,15 @@ def test_update_client_in_both_images(prod, dev):
         # rauc-mark-good (edgenode-boot-commit decides), download support.
         assert not {"squashfs-tools", "rauc-mark-good", "curl", "libcurl4"} & image.packages
         assert image.read_bytes("/usr/lib/rauc/ca.cert.pem").startswith(b"-----BEGIN CERTIFICATE")
-        # The data partition's mount and the slot commit start from a
-        # generator, on boots from a slot only.
-        assert image.read_bytes(
-            "/usr/lib/systemd/system-generators/edgenode-boot-generator").startswith(b"#!/bin/sh")
+        # The data partition's mount, the SSH host keys on it and the slot
+        # commit start from a generator, on boots from a slot only.
+        generator = image.read_file("/usr/lib/systemd/system-generators/edgenode-boot-generator")
+        assert generator.startswith("#!/bin/sh")
+        for unit in ("data.mount", "edgenode-data.service", "run-ssh.mount",
+                     "edgenode-boot-commit.service"):
+            assert f"$units/{unit}" in generator, unit
+        ssh_keys = image.read_file("/usr/lib/systemd/system/run-ssh.mount").splitlines()
+        assert {"What=/data/ssh", "Where=/run/ssh", "Options=bind"} <= set(ssh_keys)
 
 
 def test_rauc_system_configuration(prod):
@@ -283,10 +288,15 @@ def test_rauc_system_configuration(prod):
 
 
 def test_images_run_from_a_read_only_root(prod, dev):
-    # read-only-rootfs: sshd makes its host keys in /var/run at each boot,
-    # since /etc cannot be written.
+    # read-only-rootfs: sshd keeps its host keys in /var/run/ssh, since /etc
+    # cannot be written; on boots from the card, the data partition is
+    # mounted there (run-ssh.mount).
     for image in (prod, dev):
         assert "sshd_config_readonly" in image.read_file("/etc/default/ssh")
+        host_keys = [line.split()[1] for line in
+                     image.read_file("/etc/ssh/sshd_config_readonly").splitlines()
+                     if line.startswith("HostKey ")]
+        assert host_keys and all(key.startswith("/var/run/ssh/") for key in host_keys)
 
 
 def test_hardware_watchdog_configured(prod):

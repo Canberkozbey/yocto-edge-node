@@ -9,94 +9,16 @@ the target reaches it at, are target options in the labgrid environment
 """
 
 import json
-import shutil
-import socket
-import subprocess
-import threading
 import time
-from pathlib import Path
 
-import paho.mqtt.client as mqtt
 import pytest
 
 import helpers
+from broker import Broker, Subscriber
 
 WORK = "/tmp/edgenoded-mqtt-test"
 FAKE_IIO = f"{WORK}/adc/iio:device0"
 NAME = "mqtt"
-
-
-class Broker:
-    """mosquitto on the test host; stop() and start() keep the port."""
-
-    def __init__(self, listen, port, workdir):
-        self.listen, self.port = listen, port
-        self.conf = workdir / "mosquitto.conf"
-        self.conf.write_text(
-            f"listener {port} {listen}\nallow_anonymous true\npersistence false\n"
-        )
-        self.log = workdir / "mosquitto.log"
-        self.process = None
-
-    def start(self):
-        binary = shutil.which("mosquitto") or "/usr/sbin/mosquitto"
-        if not Path(binary).is_file():
-            pytest.fail("mosquitto is not installed on the test host (docs/lab.md)")
-        with open(self.log, "a") as log:
-            self.process = subprocess.Popen([binary, "-c", str(self.conf)],
-                                            stdout=log, stderr=subprocess.STDOUT)
-        deadline = time.monotonic() + 10
-        while True:
-            try:
-                socket.create_connection((self.listen, self.port), timeout=1).close()
-                return
-            except OSError:
-                if self.process.poll() is not None or time.monotonic() > deadline:
-                    pytest.fail(f"mosquitto did not start:\n{self.log.read_text()}")
-                time.sleep(0.1)
-
-    def stop(self):
-        self.process.terminate()
-        self.process.wait(timeout=10)
-
-
-class Subscriber:
-    """Collects the messages under a topic filter; subscribes again after
-    a reconnect, so it outlives a broker restart."""
-
-    def __init__(self, broker, topic_filter):
-        self.messages = []  # (topic, payload, retained)
-        self.lock = threading.Lock()
-        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-        self.client.on_connect = lambda client, *_: client.subscribe(topic_filter)
-        self.client.on_message = self._on_message
-        self.client.connect(broker.listen, broker.port)
-        self.client.loop_start()
-
-    def _on_message(self, client, userdata, message):
-        with self.lock:
-            self.messages.append((message.topic, message.payload.decode(), message.retain))
-
-    def wait_for(self, topic, condition=lambda payload: True, timeout=30, after=0):
-        """The first message on topic, from index `after` on, whose payload
-        meets condition, as (index, payload, retained); None after timeout."""
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            with self.lock:
-                messages = list(enumerate(self.messages))[after:]
-            for index, (t, payload, retained) in messages:
-                if t == topic and condition(payload):
-                    return index, payload, retained
-            time.sleep(0.1)
-        return None
-
-    def count(self):
-        with self.lock:
-            return len(self.messages)
-
-    def close(self):
-        self.client.loop_stop()
-        self.client.disconnect()
 
 
 def target_option(target, name, default=None):

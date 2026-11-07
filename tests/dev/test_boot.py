@@ -32,15 +32,19 @@ def test_only_wired_network(shell):
 
 
 def test_sd_card_slot_units_stay_out_of_other_boots(shell):
-    # The data partition's mount and the slot commit are added only to boots
-    # from an A/B slot (edgenode-boot-generator, Raspberry Pi 5). Any other
-    # boot, such as network boot in the lab, must not even wait for the SD
-    # card's partitions.
+    # The data partition's mount, what lives on it and the slot commit are
+    # added only to boots from an A/B slot (edgenode-boot-generator,
+    # Raspberry Pi 5). Any other boot, such as network boot in the lab, must
+    # not even wait for the SD card's partitions.
     if shell.run("systemctl cat data.mount >/dev/null 2>&1")[2] != 0:
         pytest.skip("no A/B update system in this image")
     if "rauc.slot=" in shell.run_check("cat /proc/cmdline")[0]:
         pytest.skip("booted from an A/B slot")
-    for unit in ("data.mount", "edgenode-data.service", "edgenode-boot-commit.service"):
+    for unit in ("data.mount", "edgenode-data.service", "run-ssh.mount",
+                 "edgenode-boot-commit.service"):
         never_started = shell.run_check(
             f"systemctl show --property=ConditionTimestampMonotonic --value {unit}")
         assert never_started == ["0"], unit
+    # edgenoded always asks for its site directory, which skips itself.
+    assert shell.run_check(
+        "systemctl show --property=ConditionResult --value edgenoded-site.service") == ["no"]

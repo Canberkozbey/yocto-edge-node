@@ -5,9 +5,10 @@ updatable industrial edge node built with the Yocto Project, with builds and
 tests that run automatically, in QEMU and on real hardware.
 
 > **Status:** Stages 1 (layer, pinned build, QEMU, CI), 2 (Raspberry Pi 5
-> hardware-in-the-loop) and 3 (A/B updates with rollback, read-only root
-> verified by dm-verity) done. From stage 4: the dev/prod split, license
-> policy, SBOM and CVE reports, and signed releases with build provenance.
+> hardware-in-the-loop), 3 (A/B updates with rollback, read-only root
+> verified by dm-verity) and 4 (dev/prod split, license policy, SBOM and CVE
+> reports, signed releases with build provenance, MQTT over mutual TLS with
+> a device identity that updates keep) done.
 
 ## What is here
 
@@ -30,6 +31,7 @@ tests that run automatically, in QEMU and on real hardware.
 | `docs/lab.md` | The test lab: hardware, wiring, network boot, host setup |
 | `docs/updates.md` | Updates: signing keys, SD card, installing a bundle |
 | `docs/releases.md` | Releases: what one holds, how to verify it, how CI makes it |
+| `docs/provisioning.md` | Provisioning a node: the site's configuration and its MQTT identity on the data partition |
 | `docs/adr/` | Architecture decision records |
 | `docs/migration-kirkstone-to-wrynose.md` | Notes from moving from Yocto 4.0 habits to 6.0 |
 
@@ -159,6 +161,12 @@ What the tests check:
   subscribers; changes follow, the connection comes back after a broker
   restart, and the status turns `offline` on a clean stop and, through the
   last will, after `kill -9`; no image names a broker
+- over mutual TLS, with certificates made for the run: the node publishes
+  to a broker that takes only certificates from its CA; it refuses a broker
+  certificate from another CA or for another address; the broker refuses a
+  node without a certificate or with one from another CA; the site's file
+  on `/data` sets the broker and the identity, and a broken site file or an
+  unreadable key leaves the node running without MQTT
 - production: root's console login asks for a password, SSH rejects root
   without one, root's password field is locked, sshd allows neither empty
   passwords nor root password logins, and no debug tools are installed
@@ -186,7 +194,10 @@ What the tests check:
   during installation keeps the running slot, a release whose service fails
   and a root filesystem changed by one block both roll back by themselves,
   bundles with a broken signature or payload are rejected, and the hardware
-  watchdog resets a hung kernel
+  watchdog resets a hung kernel; the SSH host keys and an MQTT identity
+  provisioned on `/data` (the key readable by root only) bring the node
+  online over mutual TLS, end up readable by the daemon's group only, and
+  are still the node's after an update
 
 Each production check has a control in the development image that must give
 the opposite result, so a check that cannot tell the two apart fails.
@@ -237,9 +248,8 @@ and `cryptsetup-bin`, and the update signing keys in `~/yocto/keys`
 - **The display through KMS, without libdrm.** A dumb buffer and the
   kernel's mode-setting ioctls; a BSD-2-Clause bitmap font converted at
   build time. Details: [ADR 0006](docs/adr/0006-display-through-kms.md).
-- **MQTT with libmosquitto, no broker in the image.** Plain MQTT for now
-  (TLS comes with the device identity in stage 4), retained readings and an
-  online/offline status with a last will.
+- **MQTT with libmosquitto, no broker in the image.** Retained readings
+  and an online/offline status with a last will.
   Details: [ADR 0007](docs/adr/0007-mqtt-with-libmosquitto.md).
 - **A/B updates with RAUC, slots chosen by the Pi's own firmware.** No
   U-Boot: `autoboot.txt` and the firmware's one-shot tryboot flag, driven
@@ -257,6 +267,13 @@ and `cryptsetup-bin`, and the update signing keys in `~/yocto/keys`
   environment that only `v*` tags reach, and every release file attested
   through Sigstore. Details:
   [ADR 0010](docs/adr/0010-sbom-cve-reports-and-signed-releases.md).
+- **The node's identity on the data partition, MQTT over mutual TLS.** The
+  broker, the node's key and its certificates are the site's, on `/data`,
+  in a file that `/etc/edgenoded.conf` names; only the daemon's group reads
+  them, and a broken identity leaves the node running without MQTT. The
+  SSH host keys stay there too. Details:
+  [ADR 0011](docs/adr/0011-device-identity-and-mqtt-over-mutual-tls.md),
+  [docs/provisioning.md](docs/provisioning.md).
 
 ## Roadmap
 
