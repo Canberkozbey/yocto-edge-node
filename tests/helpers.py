@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import paramiko
+import pytest
 
 MACHINE = os.environ.get("LG_MACHINE", "qemuarm64")
 # What the build under test was asked to make, as CI sets it (the image
@@ -67,6 +68,18 @@ def wait_until(condition, timeout=15, interval=0.5):
         if result or time.monotonic() > deadline:
             return result
         time.sleep(interval)
+
+
+def target_option(target, name, default=None):
+    """An option of the target in the labgrid environment (options: in
+    tests/env/*.yaml). Fails the test when the option is missing and there
+    is no default."""
+    try:
+        return target.env.config.get_target_option(target.name, name)
+    except KeyError:
+        if default is None:
+            pytest.fail(f"target option {name} missing from the labgrid environment")
+        return default
 
 
 def drm_debugfs(shell, connector):

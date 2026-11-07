@@ -1,5 +1,6 @@
 # labgrid environment: the development image on the Raspberry Pi 5 in this
-# lab, booted from its SD card. labgrid logs in as root on the serial console.
+# lab, booted over the network from the build host (docs/lab.md), or from its
+# SD card in tests/update. labgrid logs in as root on the serial console.
 #
 # Lab-specific values:
 # - the USB serial cable, by the physical USB port it is plugged into, so the

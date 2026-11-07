@@ -24,15 +24,6 @@ NAME = "tls"
 HTTP_PORT = 8085
 
 
-def target_option(target, name, default=None):
-    try:
-        return target.env.config.get_target_option(target.name, name)
-    except KeyError:
-        if default is None:
-            pytest.fail(f"target option {name} missing from the labgrid environment")
-        return default
-
-
 def online(payload):
     return payload == "online"
 
@@ -49,9 +40,9 @@ def lab(target, shell, tmp_path_factory):
     target: the node's credentials from the fleet CA, and from another CA
     that the broker does not trust."""
     work = tmp_path_factory.mktemp("tls")
-    listen = target_option(target, "mqtt_broker_listen")
-    reach = target_option(target, "mqtt_broker_from_target")
-    port = int(target_option(target, "mqtt_broker_port", 0)) or helpers.free_tcp_port()
+    listen = helpers.target_option(target, "mqtt_broker_listen")
+    reach = helpers.target_option(target, "mqtt_broker_from_target")
+    port = int(helpers.target_option(target, "mqtt_broker_port", 0)) or helpers.free_tcp_port()
     fleet, other = Pki(work, "fleet"), Pki(work, "other")
     lab = SimpleNamespace(
         work=work, listen=listen, reach=reach, port=port, fleet=fleet,

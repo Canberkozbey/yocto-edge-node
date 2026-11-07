@@ -12,10 +12,10 @@ from types import SimpleNamespace
 
 import pytest
 
+import helpers
 from broker import Broker, Pki, Subscriber
 from slots import (
     boot_status, booted_slot, expect_boot, login, power_cycle, rauc_status, reboot,
-    target_option,
 )
 
 # The bootloader EEPROM must pick config.txt sections by boot partition
@@ -33,9 +33,9 @@ def site(target, tmp_path_factory):
     data partition for it: the site's configuration, and the node's key and
     certificates (docs/adr/0011)."""
     work = tmp_path_factory.mktemp("site")
-    listen = target_option(target, "mqtt_broker_listen")
-    reach = target_option(target, "mqtt_broker_from_target")
-    port = int(target_option(target, "mqtt_broker_port"))
+    listen = helpers.target_option(target, "mqtt_broker_listen")
+    reach = helpers.target_option(target, "mqtt_broker_from_target")
+    port = int(helpers.target_option(target, "mqtt_broker_port"))
     fleet = Pki(work, "fleet")
     broker = Broker(listen, port, work, tls=fleet.issue("broker", "server", [listen, reach]))
     broker.start()

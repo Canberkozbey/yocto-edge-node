@@ -19,7 +19,7 @@ import subprocess
 import pytest
 
 import helpers
-from slots import DEVICE, login, power_cycle, target_option
+from slots import DEVICE, login, power_cycle
 
 
 @pytest.fixture(scope="module")
@@ -65,7 +65,7 @@ def sd_card(target, deploy_dir, ssh_target):
                     "(tools/netboot.py deploy edgenode-image-dev)")
     ssh_target().write_image(wic, bmap, DEVICE)
 
-    netboot = shlex.split(target_option(target, "netboot_command"))
+    netboot = shlex.split(helpers.target_option(target, "netboot_command"))
     subprocess.run([*netboot, "remove"], check=True)
     power_cycle(target)
     return login(target)

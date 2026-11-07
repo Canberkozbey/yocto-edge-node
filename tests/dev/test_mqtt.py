@@ -21,15 +21,6 @@ FAKE_IIO = f"{WORK}/adc/iio:device0"
 NAME = "mqtt"
 
 
-def target_option(target, name, default=None):
-    try:
-        return target.env.config.get_target_option(target.name, name)
-    except KeyError:
-        if default is None:
-            pytest.fail(f"target option {name} missing from the labgrid environment")
-        return default
-
-
 def set_raw(shell, value):
     shell.run_check(f"echo {value} > '{FAKE_IIO}/in_voltage0_raw'")
 
@@ -40,8 +31,8 @@ def readings(payload):
 
 @pytest.fixture(scope="module")
 def broker(target, tmp_path_factory):
-    listen = target_option(target, "mqtt_broker_listen")
-    port = int(target_option(target, "mqtt_broker_port", 0)) or helpers.free_tcp_port()
+    listen = helpers.target_option(target, "mqtt_broker_listen")
+    port = int(helpers.target_option(target, "mqtt_broker_port", 0)) or helpers.free_tcp_port()
     broker = Broker(listen, port, tmp_path_factory.mktemp("mqtt"))
     broker.start()
     yield broker
@@ -67,7 +58,7 @@ def config(target, broker):
         "port = 8084",
         f"adc_device = {WORK}/adc",
         "channel.knob = 0",
-        f"mqtt_broker = {target_option(target, 'mqtt_broker_from_target')}",
+        f"mqtt_broker = {helpers.target_option(target, 'mqtt_broker_from_target')}",
         f"mqtt_port = {broker.port}",
         "mqtt_interval = 1",
     ]

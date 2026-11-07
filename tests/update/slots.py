@@ -4,17 +4,8 @@ serial console, and the slot state as edgenode-boot and RAUC report it."""
 import json
 import re
 
-import pytest
-
 DEVICE = "/dev/mmcblk0"
 BOOT_TIMEOUT = 300
-
-
-def target_option(target, name):
-    try:
-        return target.env.config.get_target_option(target.name, name)
-    except KeyError:
-        pytest.fail(f"target option {name} missing from the labgrid environment")
 
 
 def login(target):

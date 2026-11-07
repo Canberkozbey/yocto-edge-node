@@ -1,6 +1,7 @@
 # labgrid environment: the production image on the Raspberry Pi 5 in this
-# lab, booted from its SD card. Nobody can log in to this image, so there is
-# no ShellDriver: the tests use the serial console and the network only.
+# lab, booted over the network from the build host (docs/lab.md). Nobody can
+# log in to this image, so there is no ShellDriver: the tests use the serial
+# console and the network only.
 #
 # Lab-specific values: see pi5-dev.yaml.
 
