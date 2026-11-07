@@ -6,8 +6,8 @@ tests that run automatically, in QEMU and on real hardware.
 
 > **Status:** Stages 1 (layer, pinned build, QEMU, CI), 2 (Raspberry Pi 5
 > hardware-in-the-loop) and 3 (A/B updates with rollback, read-only root
-> verified by dm-verity) done, as are the dev/prod split and license policy
-> from stage 4.
+> verified by dm-verity) done. From stage 4: the dev/prod split, license
+> policy, SBOM and CVE reports, and signed releases with build provenance.
 
 ## What is here
 
@@ -20,12 +20,16 @@ tests that run automatically, in QEMU and on real hardware.
 | `kas/base.yml` | Pinned upstream layers, distro, image and build policy |
 | `kas/base.lock.yml` | Pinned revisions of third-party layers (`kas lock`) |
 | `kas/machine/` | One file per target machine |
+| `kas/cve-check.yml` | Adds the CVE report to a build (CI's hardware job, releases) |
+| `kas/release.yml` | The release build: production image and bundle, signed with the release keys |
 | `tests/` | pytest integration tests against a running image |
 | `tools/netboot.py` | Serves a built image to the lab's Raspberry Pi 5 over the network |
-| `tools/make-dev-keys.sh` | Creates the development keys that sign update bundles, outside the repository |
+| `tools/make-signing-keys.sh` | Creates the keys that sign update bundles, development or release, outside the repository |
+| `tools/cve-summary.py`, `tools/release-notes.sh` | The CVE summary and release notes that CI writes |
 | `lab/` | This lab's configuration: addresses, dnsmasq and NFS export files |
 | `docs/lab.md` | The test lab: hardware, wiring, network boot, host setup |
 | `docs/updates.md` | Updates: signing keys, SD card, installing a bundle |
+| `docs/releases.md` | Releases: what one holds, how to verify it, how CI makes it |
 | `docs/adr/` | Architecture decision records |
 | `docs/migration-kirkstone-to-wrynose.md` | Notes from moving from Yocto 4.0 habits to 6.0 |
 
@@ -55,13 +59,13 @@ reuse shared state and take minutes.
 
 The Raspberry Pi 5 build also makes signed update bundles. Their keys stay
 outside the repository: create development keys once with
-`tools/make-dev-keys.sh` and give the build container their directory
+`tools/make-signing-keys.sh dev` and give the build container their directory
 ([docs/updates.md](docs/updates.md)). Write the SD card image with
 `bmaptool` (Ubuntu package `bmap-tools`). Check the card's device name with
 `lsblk` first: everything on it is overwritten.
 
 ```sh
-tools/make-dev-keys.sh    # once: ~/yocto/keys, and the CA key in ~/yocto/keys-ca
+tools/make-signing-keys.sh dev   # once: ~/yocto/keys, and the CA key in ~/yocto/keys-ca
 kas-container --runtime-args "-v $HOME/yocto/keys:/keys:ro" \
   build kas/base.yml:kas/machine/raspberrypi5.yml
 
@@ -69,6 +73,11 @@ sudo bmaptool copy \
   $KAS_WORK_DIR/build/tmp/deploy/images/raspberrypi5/edgenode-image-dev-raspberrypi5.rootfs.wic.bz2 \
   /dev/sdX
 ```
+
+Every build writes an SBOM per image next to it (`<image>.spdx.json`,
+SPDX 3.0). Adding `kas/cve-check.yml` to the kas files also writes a CVE
+report from it, as CI's hardware job does; that build needs network access
+([ADR 0010](docs/adr/0010-sbom-cve-reports-and-signed-releases.md)).
 
 ## Images
 
@@ -94,7 +103,7 @@ on the Raspberry Pi 5 with a different environment file.
 | --- | --- | --- |
 | `tests/dev` | development image | logs in as root on the console |
 | `tests/prod` | production image | no login possible: console prompts and forwarded ports only |
-| `tests/image` | both images, not booted | package manifests and files read from the ext4 images with `debugfs`; on the Raspberry Pi 5 also the SD card layout, boot partitions, dm-verity hash trees and update bundles |
+| `tests/image` | both images, not booted | package manifests and files read from the ext4 images with `debugfs`, SBOMs and CVE reports; on the Raspberry Pi 5 also the SD card layout, boot partitions, dm-verity hash trees, and the update bundles and their signatures |
 | `tests/update` | development image on the Raspberry Pi 5's SD card | writes the card, then installs updates, rolls back and cuts the power |
 
 ```sh
@@ -154,6 +163,9 @@ What the tests check:
   without one, root's password field is locked, sshd allows neither empty
   passwords nor root password logins, and no debug tools are installed
 - no graphics stack slipped into either image, and nothing under (L/A)GPLv3 in the production image (from the license manifests)
+- each image's SBOM (SPDX 3.0) has every installed package; where the build
+  ran the CVE check, each image has a CVE report that covers the kernel and
+  the node's own service (report only: known CVEs do not fail the build)
 - no Wi-Fi or Bluetooth firmware in either image; on the Raspberry Pi 5,
   the console is on the header UART and both radios are off in `config.txt`,
   and the running system has no wireless network or Bluetooth devices
@@ -166,7 +178,9 @@ What the tests check:
 - on the Raspberry Pi 5, the SD card image has the A/B layout, each boot
   slot names its own root filesystem with this image's dm-verity root hash,
   each root filesystem's hash tree checks out against that hash, and each
-  update bundle carries this build's slots byte for byte; on the board, the
+  update bundle carries this build's slots byte for byte, signed by a
+  certificate for code signing that chains to the CA in the image it
+  carries, and the images trust the CA that CI names; on the board, the
   root filesystem is the verity device and cannot be written, an update
   boots on trial and is committed, a power cut before the trial boot or
   during installation keeps the running slot, a release whose service fails
@@ -189,7 +203,16 @@ update tests; how CI gets the privileges that takes is in
 a self-hosted runner with the label `yocto`: a Yocto build needs more memory
 and disk than hosted runners offer, and the runner keeps the download and
 shared state caches between runs. Console logs and JUnit reports are kept
-as build artifacts.
+as build artifacts. The hardware job also runs the CVE check
+(`kas/cve-check.yml`): it puts a CVE summary on the run's page and keeps
+the SBOMs and reports as artifacts.
+
+[`.github/workflows/release.yml`](.github/workflows/release.yml) makes a
+release from a `v*` tag on a commit that CI has passed: it builds the
+production image with the release keys, which only that job sees, runs the
+image tests, and publishes the SD card image, the update bundle, the SBOM,
+the CVE report and checksums, each with a build provenance attestation
+([docs/releases.md](docs/releases.md)).
 
 Runner host requirements: Docker, kas (with `kas-container` on `PATH`),
 `qemu-system-arm`, `python3-venv`, `mosquitto` (the tests start their
@@ -215,7 +238,7 @@ and `cryptsetup-bin`, and the update signing keys in `~/yocto/keys`
   kernel's mode-setting ioctls; a BSD-2-Clause bitmap font converted at
   build time. Details: [ADR 0006](docs/adr/0006-display-through-kms.md).
 - **MQTT with libmosquitto, no broker in the image.** Plain MQTT for now
-  (TLS comes with the keys in stage 4), retained readings and an
+  (TLS comes with the device identity in stage 4), retained readings and an
   online/offline status with a last will.
   Details: [ADR 0007](docs/adr/0007-mqtt-with-libmosquitto.md).
 - **A/B updates with RAUC, slots chosen by the Pi's own firmware.** No
@@ -228,13 +251,19 @@ and `cryptsetup-bin`, and the update signing keys in `~/yocto/keys`
   hash into its boot slot's command lines; the kernel sets the verity device
   up from `dm-mod.create=`. Details:
   [ADR 0009](docs/adr/0009-read-only-root-with-dm-verity.md).
+- **SBOM on every build, CVE report from the SBOM, report only.** oe-core's
+  create-spdx and sbom-cve-check; findings go to a person, not a build
+  gate. **Releases signed with their own keys,** kept in a GitHub
+  environment that only `v*` tags reach, and every release file attested
+  through Sigstore. Details:
+  [ADR 0010](docs/adr/0010-sbom-cve-reports-and-signed-releases.md).
 
 ## Roadmap
 
 1. Layer, pinned build, QEMU boot, pytest, CI
 2. Raspberry Pi 5 as hardware-in-the-loop target, own kernel driver (ADS1115 ADC over I2C), SPI display, MQTT publishing
 3. A/B updates with RAUC, read-only rootfs with dm-verity, update and rollback tests
-4. Dev/prod split, license policy, SBOM and CVE reports, signed releases
+4. Dev/prod split, license policy, SBOM and CVE reports, signed releases, MQTT over mutual TLS with a device identity
 
 ## License
 

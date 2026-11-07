@@ -27,8 +27,10 @@ RAUC_SLOT_bootfs = "${EDGENODE_BUNDLE_IMAGE}"
 RAUC_SLOT_bootfs[fstype] = "bootfs.vfat"
 RAUC_SLOT_bootfs[rename] = "bootfs.vfat"
 
-# Signed with the development key from the build host (docs/updates.md).
-EDGENODE_KEYS_FILES = "dev.key.pem dev.cert.pem"
-RAUC_KEY_FILE = "${EDGENODE_KEYS_DIR}/dev.key.pem"
-RAUC_CERT_FILE = "${EDGENODE_KEYS_DIR}/dev.cert.pem"
+# Signed with the key in EDGENODE_KEYS_DIR: development keys from the build
+# host (docs/updates.md), or release keys in release builds
+# (docs/releases.md).
+EDGENODE_KEYS_FILES = "signing.key.pem signing.cert.pem"
+RAUC_KEY_FILE = "${EDGENODE_KEYS_DIR}/signing.key.pem"
+RAUC_CERT_FILE = "${EDGENODE_KEYS_DIR}/signing.cert.pem"
 do_bundle[prefuncs] += "edgenode_check_keys"

@@ -94,7 +94,9 @@ jobs:
       group: lab-raspberrypi5
       cancel-in-progress: false
     env:
-      KAS_FILES: kas/base.yml:kas/machine/raspberrypi5.yml
+      # With the CVE report (kas/cve-check.yml): the hardware build is the
+      # product's.
+      KAS_FILES: kas/base.yml:kas/machine/raspberrypi5.yml:kas/cve-check.yml
 
     steps:
       - name: Check out
@@ -114,9 +116,9 @@ jobs:
         # Development keys on the runner's host, outside the repository
         # (docs/updates.md); the build container gets them read-only.
         run: |
-          for file in ca.cert.pem dev.cert.pem dev.key.pem; do
+          for file in ca.cert.pem signing.cert.pem signing.key.pem; do
             if [ ! -f "$EDGENODE_KEYS/$file" ]; then
-              echo "::error::$EDGENODE_KEYS/$file missing; create the keys with tools/make-dev-keys.sh (docs/updates.md)"
+              echo "::error::$EDGENODE_KEYS/$file missing; create the keys with tools/make-signing-keys.sh dev (docs/updates.md)"
               exit 1
             fi
           done
@@ -143,9 +145,33 @@ jobs:
         run: echo "LG_IMAGES=$KAS_WORK_DIR/build/tmp/deploy/images/raspberrypi5" >> "$GITHUB_ENV"
 
       - name: Tests, image contents
+        env:
+          LG_MACHINE: raspberrypi5
+          EDGENODE_CVE_CHECK: "1"
         run: |
-          LG_MACHINE=raspberrypi5 .venv/bin/pytest tests/image -v \
+          EDGENODE_CA_CERT="$EDGENODE_KEYS/ca.cert.pem" .venv/bin/pytest tests/image -v \
             --junitxml=test-logs/pi5-image.xml
+
+      - name: SBOM and CVE report
+        # Report only (docs/adr/0010): the summary goes to the run's page,
+        # the files to its artifacts.
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          mkdir -p sbom
+          for image in edgenode-image edgenode-image-dev; do
+            stem="$LG_IMAGES/$image-raspberrypi5.rootfs"
+            cp -L "$stem.spdx.json" "$stem.sbom-cve-check.yocto.json" "$stem.cve.txt" sbom/
+            tools/cve-summary.py "$stem.sbom-cve-check.yocto.json" "CVE report: $image" >> "$GITHUB_STEP_SUMMARY"
+            echo >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Upload SBOM and CVE report
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-raspberrypi5
+          path: sbom/
+          if-no-files-found: error
 
       - name: Tests, development image (hardware)
         # Runs even when the image checks failed, as long as there are images.

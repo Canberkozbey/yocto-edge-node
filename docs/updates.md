@@ -13,20 +13,22 @@ keys are never in the repository. Create development keys on the build
 host:
 
 ```sh
-tools/make-dev-keys.sh
+tools/make-signing-keys.sh dev
 ```
 
 | File | What it is | Who reads it |
 | --- | --- | --- |
 | `~/yocto/keys/ca.cert.pem` | CA certificate, the keyring in every image | the build (`rauc-conf`) |
-| `~/yocto/keys/dev.cert.pem` | Signing certificate, issued by the CA for code signing | the build (bundles) |
-| `~/yocto/keys/dev.key.pem` | Signing key | the build (bundles) |
+| `~/yocto/keys/signing.cert.pem` | Signing certificate, issued by the CA for code signing | the build (bundles) |
+| `~/yocto/keys/signing.key.pem` | Signing key | the build (bundles) |
 | `~/yocto/keys-ca/ca.key.pem` | CA key, issues signing certificates | nobody during builds |
 
 The script refuses to replace existing keys. Images trust only the CA they
 were built with, so new keys mean a newly written SD card. Anyone holding
 these keys can sign updates for images built with them; they are for
-development only.
+development only. Releases are signed with separate release keys that only
+CI's release job sees ([releases.md](releases.md)), so a development bundle
+does not install on a released image, nor the other way round.
 
 ## Building
 

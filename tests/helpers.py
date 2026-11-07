@@ -20,6 +20,15 @@ from pathlib import Path
 import paramiko
 
 MACHINE = os.environ.get("LG_MACHINE", "qemuarm64")
+# What the build under test was asked to make, as CI sets it (the image
+# tests read the deploy directory, which does not record it):
+#   EDGENODE_CVE_CHECK=1  the build ran the CVE check (kas/cve-check.yml)
+#   EDGENODE_RELEASE=1    release build: no development bundle
+#                         (kas/release.yml)
+#   EDGENODE_CA_CERT      the CA certificate the build's images must trust
+CVE_CHECK = os.environ.get("EDGENODE_CVE_CHECK") == "1"
+RELEASE = os.environ.get("EDGENODE_RELEASE") == "1"
+CA_CERT = os.environ.get("EDGENODE_CA_CERT")
 
 
 def free_tcp_port():
@@ -282,6 +291,40 @@ def bundle_manifest(bundle):
         ["unsquashfs", "-cat", str(bundle), "manifest.raucm"],
         capture_output=True, check=True, text=True,
     ).stdout
+    return parse_manifest(text)
+
+
+def bundle_signature(bundle, keyring, work):
+    """Verifies a RAUC bundle's signature against a keyring, as RAUC does
+    before it installs, with openssl. Returns the signed manifest and the
+    signer's certificate (PEM); raises CalledProcessError if it does not
+    verify.
+
+    The bundle ends with its CMS signature and the signature's size (64-bit
+    big endian). In the verity format the signature carries the manifest,
+    with the root hash of the squashfs before it.
+    """
+    work = Path(work)
+    with open(bundle, "rb") as f:
+        f.seek(-8, os.SEEK_END)
+        (size,) = struct.unpack(">Q", f.read(8))
+        f.seek(-8 - size, os.SEEK_END)
+        (work / "signature.der").write_bytes(f.read(size))
+    # -purpose any: openssl 3.0 has no code signing purpose, so the caller
+    # checks the signer's extended key usage itself.
+    subprocess.run(
+        ["openssl", "cms", "-verify", "-inform", "DER",
+         "-in", str(work / "signature.der"), "-CAfile", str(keyring),
+         "-purpose", "any", "-signer", str(work / "signer.pem"),
+         "-out", str(work / "manifest.raucm")],
+        capture_output=True, check=True,
+    )
+    return (parse_manifest((work / "manifest.raucm").read_text()),
+            (work / "signer.pem").read_text())
+
+
+def parse_manifest(text):
+    """{section: {key: value}} of a RAUC manifest's text."""
     sections, current = {}, None
     for line in text.splitlines():
         line = line.strip()

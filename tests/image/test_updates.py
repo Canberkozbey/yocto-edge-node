@@ -13,6 +13,7 @@ import shlex
 import shutil
 import struct
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -36,6 +37,13 @@ LAYOUT = [
 ]
 AUTOBOOT_A = b"[all]\ntryboot_a_b=1\nboot_partition=2\n[tryboot]\nboot_partition=3\n"
 IMAGES = ("edgenode-image", "edgenode-image-dev")
+# Each bundle and the image it carries. Release builds make no development
+# bundle (kas/release.yml).
+BUNDLES = [
+    ("edgenode-bundle", "edgenode-image"),
+    pytest.param("edgenode-bundle-dev", "edgenode-image-dev", marks=pytest.mark.skipif(
+        helpers.RELEASE, reason="release builds make no development bundle")),
+]
 
 
 @pytest.fixture(scope="module")
@@ -200,10 +208,7 @@ def test_boot_slot_has_the_boot_files(deploy_dir, image):
         (deploy_dir / "bootfiles" / "config.txt").read_bytes()
 
 
-@pytest.mark.parametrize("bundle, image", [
-    ("edgenode-bundle", "edgenode-image"),
-    ("edgenode-bundle-dev", "edgenode-image-dev"),
-])
+@pytest.mark.parametrize("bundle, image", BUNDLES)
 def test_bundle_carries_this_builds_slots(deploy_dir, bundle, image):
     manifest = helpers.bundle_manifest(deploy_dir / f"{bundle}-raspberrypi5.raucb")
     assert manifest["update"]["compatible"] == "edgenode-raspberrypi5"
@@ -218,6 +223,40 @@ def test_bundle_carries_this_builds_slots(deploy_dir, bundle, image):
     assert rootfs["sha256"] == helpers.sha256_file(image_file(deploy_dir, image, "verity"))
     assert boot["sha256"] == helpers.sha256_file(image_file(deploy_dir, image, "bootfs.vfat"))
     assert int(boot["size"]) == LAYOUT[1][2]
+
+
+@pytest.mark.parametrize("bundle, image", BUNDLES)
+def test_bundle_signed_for_the_images_keyring(deploy_dir, tmp_path, bundle, image):
+    # What RAUC checks before it installs: the signature chains to the CA
+    # certificate in the image (its keyring), and the signer is meant for
+    # code signing (check-purpose=codesign).
+    keyring = tmp_path / "keyring.pem"
+    keyring.write_bytes(helpers.Image(deploy_dir, image).read_bytes("/usr/lib/rauc/ca.cert.pem"))
+    path = deploy_dir / f"{bundle}-raspberrypi5.raucb"
+    signed, signer = helpers.bundle_signature(path, keyring, tmp_path)
+    usage = subprocess.run(["openssl", "x509", "-noout", "-ext", "extendedKeyUsage"],
+                           input=signer, capture_output=True, check=True, text=True).stdout
+    assert "Code Signing" in usage
+    # The signed manifest is the one in the bundle, plus the verity root
+    # hash that protects the bundle's squashfs.
+    manifest = helpers.bundle_manifest(path)
+    assert {k: v for k, v in signed.items() if k != "bundle"} == \
+        {k: v for k, v in manifest.items() if k != "bundle"}
+    assert {"verity-hash", "verity-salt", "verity-size"} <= set(signed["bundle"])
+
+
+@pytest.mark.skipif(helpers.CA_CERT is None, reason="no expected CA given (EDGENODE_CA_CERT)")
+@pytest.mark.parametrize("image", IMAGES)
+def test_images_trust_the_expected_ca(deploy_dir, image):
+    # CI names the CA its keys come from: the development CA, or in a
+    # release the release CA (docs/releases.md).
+    keyring = helpers.Image(deploy_dir, image).read_bytes("/usr/lib/rauc/ca.cert.pem")
+    assert keyring == Path(helpers.CA_CERT).read_bytes(), f"{image} trusts another CA than {helpers.CA_CERT}"
+
+
+@pytest.mark.skipif(not helpers.RELEASE, reason="not a release build (EDGENODE_RELEASE)")
+def test_release_build_signs_no_development_bundle(deploy_dir):
+    assert not list(deploy_dir.glob("edgenode-bundle-dev*"))
 
 
 def test_update_client_in_both_images(prod, dev):

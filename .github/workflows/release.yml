@@ -1,0 +1,195 @@
+# Release: pushing a tag vX.Y.Z builds the Raspberry Pi 5 production image
+# with the release keys, checks it and publishes a GitHub release: the SD
+# card image, the update bundle, the SBOM, the CVE report and checksums,
+# each with a build provenance attestation (docs/releases.md,
+# docs/adr/0010).
+#
+# Tag a commit only once CI has passed on it: the release checks that, and
+# does not repeat the hardware tests.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release (Raspberry Pi 5)
+    runs-on: [self-hosted, linux, x64, yocto]
+    timeout-minutes: 480
+    # The release keys are this environment's secrets; the environment
+    # accepts only v* tags (docs/releases.md).
+    environment: release
+    permissions:
+      contents: write      # create the release
+      id-token: write      # attestations: the identity Sigstore certifies
+      attestations: write  # attestations: store them with the repository
+      actions: read        # find CI's runs for this commit
+    defaults:
+      run:
+        shell: bash
+    env:
+      KAS_FILES: kas/base.yml:kas/machine/raspberrypi5.yml:kas/release.yml
+      # In memory, never on disk; removed right after the build.
+      KEYS: /dev/shm/edgenode-release-keys
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the tag and the repository
+        env:
+          PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          version=$(sed -n 's/^DISTRO_VERSION = "\(.*\)"$/\1/p' meta-edgenode/conf/distro/edgenode.conf)
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match DISTRO_VERSION $version (meta-edgenode/conf/distro/edgenode.conf)"
+            exit 1
+          fi
+          # Attestations need a public repository (on GitHub's free plans).
+          if [ "$PRIVATE" != false ]; then
+            echo "::error::releases need a public repository, for their attestations (docs/releases.md)"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Check that CI passed for this commit
+        # A successful CI run of a push or a manual run: those include the
+        # hardware tests, which pull requests skip (ci.yml).
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&status=success&per_page=100" \
+            > ci-runs.json
+          python3 - ci-runs.json <<'EOF' || {
+          import json, sys
+          runs = json.load(open(sys.argv[1]))["workflow_runs"]
+          sys.exit(not any(run["event"] in ("push", "workflow_dispatch") for run in runs))
+          EOF
+            echo "::error::no successful CI run for $GITHUB_SHA; tag a commit once CI has passed on it"
+            exit 1
+          }
+
+      - name: Set up work and cache directories
+        run: |
+          # Shares the download and shared state caches with CI, but not its
+          # build directory.
+          {
+            echo "DL_DIR=${DL_DIR:-$HOME/yocto/cache/downloads}"
+            echo "SSTATE_DIR=${SSTATE_DIR:-$HOME/yocto/cache/sstate}"
+            echo "KAS_WORK_DIR=$HOME/yocto/release-work"
+          } >> "$GITHUB_ENV"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install the release keys
+        env:
+          RELEASE_CA_CERT: ${{ secrets.RELEASE_CA_CERT }}
+          RELEASE_SIGNING_CERT: ${{ secrets.RELEASE_SIGNING_CERT }}
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          for name in RELEASE_CA_CERT RELEASE_SIGNING_CERT RELEASE_SIGNING_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "::error::secret $name is not set in the release environment (docs/releases.md)"
+              exit 1
+            fi
+          done
+          rm -rf "$KEYS"
+          (
+            umask 077
+            mkdir "$KEYS"
+            printf '%s\n' "$RELEASE_CA_CERT" > "$KEYS/ca.cert.pem"
+            printf '%s\n' "$RELEASE_SIGNING_CERT" > "$KEYS/signing.cert.pem"
+            printf '%s\n' "$RELEASE_SIGNING_KEY" > "$KEYS/signing.key.pem"
+          )
+          # The signing certificate chains to the CA, is for code signing,
+          # and belongs to the key.
+          openssl verify -CAfile "$KEYS/ca.cert.pem" "$KEYS/signing.cert.pem"
+          openssl x509 -in "$KEYS/signing.cert.pem" -noout -ext extendedKeyUsage | grep -q "Code Signing"
+          if [ "$(openssl pkey -in "$KEYS/signing.key.pem" -pubout)" != \
+               "$(openssl x509 -in "$KEYS/signing.cert.pem" -noout -pubkey)" ]; then
+            echo "::error::RELEASE_SIGNING_KEY does not belong to RELEASE_SIGNING_CERT"
+            exit 1
+          fi
+          # Never the development CA from the build host.
+          if [ -f "$HOME/yocto/keys/ca.cert.pem" ] && cmp -s "$KEYS/ca.cert.pem" "$HOME/yocto/keys/ca.cert.pem"; then
+            echo "::error::RELEASE_CA_CERT is the development CA"
+            exit 1
+          fi
+          # The CA certificate is public: the tests and the release need it
+          # after the keys are gone.
+          cp "$KEYS/ca.cert.pem" "$RUNNER_TEMP/release-ca.cert.pem"
+
+      - name: Build
+        id: build
+        run: |
+          mkdir -p "$DL_DIR" "$SSTATE_DIR" "$KAS_WORK_DIR"
+          kas-container --runtime-args "-v $KEYS:/keys:ro" build "$KAS_FILES"
+
+      - name: Remove the release keys
+        if: always()
+        run: rm -rf "$KEYS"
+
+      - name: Install test dependencies
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet -r tests/requirements.txt
+
+      - name: Tests, image contents
+        env:
+          LG_MACHINE: raspberrypi5
+          EDGENODE_RELEASE: "1"
+          EDGENODE_CVE_CHECK: "1"
+        run: |
+          export LG_IMAGES="$KAS_WORK_DIR/build/tmp/deploy/images/raspberrypi5"
+          export EDGENODE_CA_CERT="$RUNNER_TEMP/release-ca.cert.pem"
+          .venv/bin/pytest tests/image -v --junitxml=test-logs/release-image.xml
+
+      - name: Collect the release files
+        run: |
+          deploy="$KAS_WORK_DIR/build/tmp/deploy/images/raspberrypi5"
+          image="$deploy/edgenode-image-raspberrypi5.rootfs"
+          name="edgenode-$VERSION-raspberrypi5"
+          rm -rf release
+          mkdir release
+          cp -L "$image.wic.bz2" "release/$name.wic.bz2"
+          cp -L "$image.wic.bmap" "release/$name.wic.bmap"
+          cp -L "$deploy/edgenode-bundle-raspberrypi5.raucb" "release/$name.raucb"
+          cp -L "$image.spdx.json" "release/$name.spdx.json"
+          cp -L "$image.sbom-cve-check.yocto.json" "release/$name.cve.json"
+          cp -L "$image.cve.txt" "release/$name.cve.txt"
+          cp "$RUNNER_TEMP/release-ca.cert.pem" release/edgenode-release-ca.cert.pem
+          (cd release && sha256sum -- * > SHA256SUMS)
+          tools/release-notes.sh "$VERSION" release "release/$name.cve.json" > release-notes.md
+          cat release-notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release/*
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
+        with:
+          name: Edge Node ${{ env.VERSION }}
+          body_path: release-notes.md
+          files: release/*
+          fail_on_unmatched_files: true
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-logs-release
+          path: test-logs/
+          if-no-files-found: ignore

@@ -1,0 +1,20 @@
+# Release build (docs/releases.md): the Raspberry Pi 5 production image, its
+# SD card image and its update bundle, with the CVE report. The release
+# workflow (.github/workflows/release.yml) gives it the release keys:
+#
+#   kas-container --runtime-args "-v /dev/shm/edgenode-release-keys:/keys:ro" \
+#       build kas/base.yml:kas/machine/raspberrypi5.yml:kas/release.yml
+#
+# The development image is built too, as the image tests' control. The
+# development bundle is not: a debug image signed with the release key
+# would install on every released node.
+
+header:
+  version: 20
+  includes:
+    - kas/cve-check.yml
+
+target:
+  - edgenode-image
+  - edgenode-image-dev
+  - edgenode-bundle

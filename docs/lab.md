@@ -137,9 +137,17 @@ reads the update bundles' manifests, and cryptsetup-bin's `veritysetup`
 checks the root filesystems against their root hashes.
 
 The Raspberry Pi 5 build signs update bundles with keys kept outside the
-repository; create them once with `tools/make-dev-keys.sh`
+repository; create them once with `tools/make-signing-keys.sh dev`
 ([docs/updates.md](updates.md)). CI looks for them in `~/yocto/keys` of the
-runner's account.
+runner's account. Release keys never go on the build host's disk: the
+release workflow gets them from GitHub ([docs/releases.md](releases.md)).
+
+CI's hardware build runs the CVE check (`kas/cve-check.yml`). Its first run
+clones two large git repositories of CVE data into the download directory,
+and every run after that fetches what changed, so the host needs network
+access during builds and room in `~/yocto/cache/downloads` for them. Releases
+build in `~/yocto/release-work`, a second build directory next to CI's
+`~/yocto/ci-work`.
 
 The MQTT tests start their own mosquitto broker on the build host's LAN
 address, port 18830 (`tests/env/pi5-dev.yaml`); only the binary is needed,

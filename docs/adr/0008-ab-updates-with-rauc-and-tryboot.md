@@ -91,8 +91,9 @@ A power cut or a watchdog reset clears it as well.
   (`check-purpose=codesign`). Its validity is checked at the bundle's
   signing time, because a board without an RTC battery can boot with the
   wrong time.
-- **Keys stay outside the repository.** `tools/make-dev-keys.sh` creates
-  development keys on the build host. The build container gets the
+- **Keys stay outside the repository.** `tools/make-signing-keys.sh dev`
+  creates development keys on the build host; release keys live in CI's
+  secrets (ADR 0010). The build container gets the
   directory with the signing key and the CA certificate read-only, at
   `/keys`; the CA key stays out of it. A missing key fails the build with a
   message that says what to do (`edgenode-keys.bbclass`).
@@ -178,6 +179,6 @@ A power cut or a watchdog reset clears it as well.
 - **Delivery is local.** Delivery is out of scope here: the tests copy the
   bundle to the board. A fleet would use an update server (hawkBit with
   `rauc-hawkbit-updater`) or RAUC's streaming over HTTPS.
-- **Development keys.** Anyone with them can sign updates for these images.
-  Production keys would live in an HSM or a CI secret store, and release
-  signing comes in stage 4.
+- **Development keys.** Anyone with them can sign updates for images built
+  with them. Releases are signed with separate release keys from CI's
+  secret store (ADR 0010); a fleet would keep them in an HSM.
