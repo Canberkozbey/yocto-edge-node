@@ -69,3 +69,17 @@ def test_cve_report_written(deploy_dir, image):
     # The readable summary: one line per recipe with unpatched CVEs, so
     # empty when there are none.
     assert deploy_file(deploy_dir, image, "cve.txt").is_file()
+
+
+@needs_cve_check
+@pytest.mark.skipif(helpers.MACHINE != "raspberrypi5", reason="the Raspberry Pi kernel's source list")
+@pytest.mark.parametrize("image", IMAGES)
+def test_cve_report_leaves_out_kernel_code_not_built(deploy_dir, image):
+    # The kernel's debug information gives the source files it builds
+    # (debug-info.cfg), and a CVE in files it does not build is not
+    # affected. Without that list every file of the tree counts as built,
+    # and the report lists every kernel CVE.
+    report = json.loads(deploy_file(deploy_dir, image, "sbom-cve-check.yocto.json").read_text())
+    kernel = next(p for p in report["package"] if p["name"] == "linux-raspberrypi")
+    not_built = [i for i in kernel["issue"] if i.get("detail") == "not-applicable-config"]
+    assert not_built and all(i["status"] == "Ignored" for i in not_built)
