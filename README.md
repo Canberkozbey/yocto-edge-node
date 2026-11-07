@@ -175,12 +175,14 @@ What the tests check:
   ran the CVE check, each image has a CVE report that covers the kernel and
   the node's own service (report only: known CVEs do not fail the build)
 - no Wi-Fi or Bluetooth firmware in either image; on the Raspberry Pi 5,
-  the console is on the header UART and both radios are off in `config.txt`,
-  and the running system has no wireless network or Bluetooth devices
+  the console is on the header UART, both radios and VC4 graphics are off
+  in `config.txt`, and the running system has no wireless network or
+  Bluetooth devices
 - on the Raspberry Pi 5, the ADS1115 ADC reads its fixed references (GND and
   3.3 V) within tolerance, with the full scale set in the device tree; the
   ST7789 display registers as a 240x240 DRM display, with its init sequence
-  compiled at build time, and its backlight follows its control;
+  compiled at build time, is the only graphics device (no VC4 or sound
+  driver registers), and its backlight follows its control;
   hardware tests carry labgrid's `lg_feature` marker and are skipped where
   the environment lacks that hardware
 - on the Raspberry Pi 5, the SD card image has the A/B layout, each boot

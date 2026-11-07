@@ -29,9 +29,22 @@ example, installs Wi-Fi and Bluetooth firmware for every image.
   the BSP's `kernel-modules` recommendation (it comes with
   `packagegroup-base`, which they do not use), so a module is on the device
   only when it is listed with its function, as the ADC's are.
+- Second application, once the hardware set was final: **no VC4 graphics**
+  on the Raspberry Pi 5. The display is an SPI panel with its own DRM
+  driver (ADR 0006), and nothing on the node uses HDMI, the V3D GPU or
+  sound. `kas/machine/raspberrypi5.yml` sets `DISABLE_VC4GRAPHICS`, which
+  drops the BSP's `vc4graphics` machine feature:
+  - the `vc4-kms-v3d` overlay leaves `config.txt`, so the hardware stays
+    off;
+  - the kernel no longer has the DRM core, the VC4 driver and the sound
+    core built in (the BSP's `vc4graphics.cfg`). All three stay modules,
+    as in the kernel's own configuration, and the images install only the
+    DRM modules the panel driver depends on.
 - `tests/image/test_artifacts.py` checks that no wireless firmware is
-  installed and, on the Raspberry Pi 5, that both overlays are in
-  `config.txt`.
+  installed and, on the Raspberry Pi 5, that both radio overlays are in
+  `config.txt` and no VC4 overlay is. On the board,
+  `tests/dev/test_display.py` checks that no VC4 or sound driver registers
+  and that the panel is the only DRM device.
 
 ## Alternatives considered
 
@@ -41,10 +54,12 @@ example, installs Wi-Fi and Bluetooth firmware for every image.
   install, and keeping Poky's defaults avoids an untested combination.
 - **Leaving the radios on and only omitting the firmware:** the hardware
   would still be enabled with no use for it.
+- **Only removing the VC4 overlay:** the hardware would be off, but the VC4
+  driver and the sound core would still be in the kernel.
 
 ## Consequences
 
 - Wi-Fi or Bluetooth can come back with a function that needs them: undo the
   firmware removal and the overlays, and record why in a new ADR.
-- Not yet applied, to revisit once the hardware set is final (ADC driver
-  and display): the BSP enables the VC4 graphics overlay.
+- A display on HDMI would bring VC4 back: drop `DISABLE_VC4GRAPHICS` and
+  record why.

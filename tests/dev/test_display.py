@@ -3,9 +3,9 @@ panel-mipi-dbi driver.
 
 The panel is write-only, so its pixels cannot be read back. The tests check
 what the kernel reports: the panel registered as a DRM display with its
-mode, which also means its init sequence (panel.bin) loaded, a backlight
-that follows its control, and edgenoded's framebuffer on screen, given back
-to the console when the service stops. Looking at the picture is a manual
+mode, which also means its init sequence (panel.bin) loaded, the only
+graphics device, a backlight that follows its control, and edgenoded's
+framebuffer on screen, given back to the console when the service stops. Looking at the picture is a manual
 check (docs/lab.md). Runs only where the labgrid environment lists st7789.
 """
 
@@ -44,6 +44,19 @@ def test_panel_driver_bound(shell, connector):
 def test_connected_with_panel_mode(shell, connector):
     assert shell.run_check(f"cat {connector}/status") == ["connected"]
     assert "240x240" in shell.run_check(f"cat {connector}/modes")
+
+
+def test_panel_is_the_only_graphics_device(shell):
+    # No VC4 (HDMI and the V3D GPU) and no sound (docs/adr/0003): neither is
+    # built into the kernel or installed as modules, so none of their
+    # drivers registers, and the panel's card is the only DRM device.
+    drivers = shell.run_check("ls -1 /sys/bus/platform/drivers")
+    assert not [d for d in drivers if d.startswith(("vc4", "v3d"))], drivers
+    assert shell.run("test -e /proc/asound")[2] != 0, "the sound core is in the kernel"
+    drm = shell.run_check("ls -1 /sys/class/drm")
+    connectors = [entry for entry in drm if entry.startswith("card") and "-" in entry]
+    assert connectors and all("-SPI-" in entry for entry in connectors), drm
+    assert not [entry for entry in drm if entry.startswith("renderD")], drm
 
 
 def test_backlight_follows_control(shell, backlight):

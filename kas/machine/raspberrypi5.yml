@@ -60,7 +60,8 @@ local_conf_header:
     # mode 3 (cpha, cpol); MISO is not wired (write-only). The driver loads
     # the panel's init sequence from /lib/firmware/panel.bin
     # (edgenode-panel-firmware). Kernel modules: the panel driver, the RP1's
-    # SPI controller and the GPIO backlight; DRM comes with the first.
+    # SPI controller and the GPIO backlight; the DRM core comes with the
+    # first, as a module (raspberrypi5-no-vc4).
     RPI_KERNEL_DEVICETREE_OVERLAYS:append = " overlays/mipi-dbi-spi.dtbo"
     RPI_EXTRA_CONFIG:append = "\ndtoverlay=mipi-dbi-spi,spi0-0,cpha,cpol,write-only\ndtparam=width=240,height=240,reset-gpio=23,dc-gpio=24\ndtparam=backlight-gpio=18"
     CORE_IMAGE_EXTRA_INSTALL:append = " edgenode-panel-firmware kernel-module-panel-mipi-dbi kernel-module-spi-dw-mmio kernel-module-gpio-backlight"
@@ -130,6 +131,16 @@ local_conf_header:
         bluez-firmware-rpidistro-bcm4345c5-hcd \
     "
     RPI_EXTRA_CONFIG:append = "\ndtoverlay=disable-wifi-pi5\ndtoverlay=disable-bt-pi5"
+
+  raspberrypi5-no-vc4: |
+    # No VC4 graphics (docs/adr/0003): the display is the SPI panel with its
+    # own DRM driver, and nothing uses HDMI, the V3D GPU or sound. The BSP's
+    # vc4graphics machine feature adds the vc4-kms-v3d overlay to
+    # config.txt and builds the DRM core, the VC4 driver and the sound core
+    # into the kernel (vc4graphics.cfg). Without it the kernel keeps the
+    # defconfig's modules for all of them, and the images install only the
+    # DRM modules the panel driver depends on.
+    DISABLE_VC4GRAPHICS = "1"
 
   raspberrypi5-adc: |
     # ADS1115 ADC on the header's I2C bus (GPIO2/3, pins 3 and 5) at address

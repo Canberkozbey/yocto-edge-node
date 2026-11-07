@@ -158,9 +158,11 @@ def test_raspberrypi5_boot_files(deploy_dir):
     # Console on the 40-pin header's UART, where the serial cable is.
     assert "dtparam=uart0_console" in config
     assert "console=serial0,115200" in cmdline
-    # Both radios off (docs/adr/0003).
+    # Both radios off, and no VC4 graphics: the display is the SPI panel
+    # (docs/adr/0003).
     assert "dtoverlay=disable-wifi-pi5" in config
     assert "dtoverlay=disable-bt-pi5" in config
+    assert not [line for line in config if line.startswith("dtoverlay=vc4-")], config
     # The ADS1115 on the header's I2C bus, through our own driver's overlay.
     assert "dtparam=i2c_arm=on" in config
     assert "dtoverlay=edgenode-ads1115" in config
