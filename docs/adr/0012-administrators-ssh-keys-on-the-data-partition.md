@@ -61,9 +61,11 @@ node: its SSH host keys and its MQTT identity (ADR 0011).
   a Match block for root cannot slip past it.
 - **`tests/update`, on the Raspberry Pi 5.** On the card's first boot, a
   key made for the run does not log in. Written to
-  `/data/ssh/authorized_keys`, it does, and sshd's log names that key: the
-  development image would let root in without a password as well. After
-  the update to the other slot, the same key still logs in.
+  `/data/ssh/authorized_keys`, it does. Its line there forces a command,
+  and the session must run it: the development image would let root in
+  without a password as well, so a login alone would not show that the key
+  was taken. After the update to the other slot, the same key still logs
+  in.
 
 ## Alternatives considered
 

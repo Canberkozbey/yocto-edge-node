@@ -3,8 +3,6 @@ root filesystem, and the node's identity on the data partition, which
 updates keep. The tests run in order; each starts where the one before left
 the board (conftest.py)."""
 
-import base64
-import hashlib
 import os
 import re
 import shutil
@@ -27,6 +25,10 @@ EEPROM_MIN_TIMESTAMP = 1740787200  # 2025-03-01 00:00 UTC
 ROOT = {"A": "/dev/mmcblk0p4", "B": "/dev/mmcblk0p5"}
 BOOT = {"A": "/dev/mmcblk0p2", "B": "/dev/mmcblk0p3"}
 REMOTE_BUNDLE = "/tmp/update.raucb"
+# What the test key's line in root's authorized_keys makes a session run. A
+# session that prints it was let in by that key: the development image
+# would let root in without a password as well.
+KEY_PROOF = "edgenode-test-key"
 
 
 @pytest.fixture(scope="module")
@@ -84,22 +86,21 @@ def host_keys(shell):
     return sorted(shell.run_check("cat /run/ssh/*.pub"))
 
 
-def root_logs_in_with(shell, target, key):
-    """Root logs in over SSH with `key`, and sshd says it took that key: the
-    development image would also take root without a password."""
+def root_logs_in_with(target, key):
+    """Root logs in over SSH with `key`, and the session runs the command
+    that the key's line forces (KEY_PROOF): it was this key that let root in."""
     address = target.get_resource("NetworkService").address
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
         client.connect(address, username="root", pkey=key, look_for_keys=False,
                        allow_agent=False, timeout=10, banner_timeout=30)
+        _, stdout, _ = client.exec_command("true", timeout=30)
+        return stdout.read().decode().strip() == KEY_PROOF
     except paramiko.AuthenticationException:
         return False
     finally:
         client.close()
-    fingerprint = base64.b64encode(hashlib.sha256(key.asbytes()).digest()).decode().rstrip("=")
-    return shell.run("journalctl -b --no-pager | grep -F 'Accepted publickey for root' | "
-                     f"grep -qF 'SHA256:{fingerprint}'")[2] == 0
 
 
 def ls_mode(shell, path):
@@ -193,11 +194,12 @@ def test_node_identity_lives_on_the_data_partition(target, sd_card, ssh_target, 
     # Root's keys: an administrator's key provisioned on /data lets root in,
     # the production image's only remote login (docs/adr/0012).
     site.admin_key = paramiko.ECDSAKey.generate()
-    assert not root_logs_in_with(shell, target, site.admin_key)  # control
-    public = f"{site.admin_key.get_name()} {site.admin_key.get_base64()} edgenode-test"
-    shell.run_check(f"printf '%s\\n' '{public}' > /data/ssh/authorized_keys && "
+    assert not root_logs_in_with(target, site.admin_key)  # control
+    line = (f'command="echo {KEY_PROOF}" '
+            f"{site.admin_key.get_name()} {site.admin_key.get_base64()} edgenode-test")
+    shell.run_check(f"printf '%s\\n' '{line}' > /data/ssh/authorized_keys && "
                     "chmod 0600 /data/ssh/authorized_keys")
-    assert root_logs_in_with(shell, target, site.admin_key)
+    assert root_logs_in_with(target, site.admin_key)
 
     # Provisioned as a site might: the key readable by root only. The site
     # unit gives the daemon's group read access, and nobody else.
@@ -235,7 +237,7 @@ def test_update_boots_the_other_slot_on_trial_and_commits_it(target, sd_card, ss
     # The node is still itself: the same SSH host keys and root's keys, and
     # the same MQTT identity and site configuration, all from /data.
     assert host_keys(shell) == site.host_keys
-    assert root_logs_in_with(shell, target, site.admin_key)
+    assert root_logs_in_with(target, site.admin_key)
     assert connected_over_tls(shell), "\n".join(shell.run("journalctl -b -u edgenoded")[0])
 
 
