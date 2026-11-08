@@ -54,6 +54,18 @@ def test_sbom_covers_every_installed_package(deploy_dir, image):
     assert elements["simplelicensing_LicenseExpression"]
 
 
+@pytest.mark.parametrize("image", IMAGES)
+def test_image_files_named_after_the_version(deploy_dir, image):
+    # The distro version where oe-core puts the build time (edgenode.conf).
+    # New CVE data runs the CVE check again on its own, and it looks for the
+    # SBOM under the image's name in that build: an image built earlier, or
+    # taken from the shared state cache, must have the same name.
+    lines = helpers.Image(deploy_dir, image).read_file("/usr/lib/os-release").splitlines()
+    version = dict(line.split("=", 1) for line in lines if "=" in line)["VERSION_ID"].strip('"')
+    sbom = deploy_file(deploy_dir, image, "spdx.json").resolve()
+    assert sbom.name == f"{image}-{helpers.MACHINE}.rootfs-{version}.spdx.json"
+
+
 @needs_cve_check
 @pytest.mark.parametrize("image", IMAGES)
 def test_cve_report_written(deploy_dir, image):
