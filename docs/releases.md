@@ -21,7 +21,8 @@ The release notes list the release CA's fingerprint and summarise the CVE
 report. The image trusts only the release CA, so it installs only release
 bundles. A released node runs the production image: no password login.
 Root may log in over SSH with a key only, and the image carries no key, so
-a released node has no remote login (SECURITY.md).
+a released node has no remote login until its site provisions an
+administrator's key on its data partition (docs/provisioning.md, ADR 0012).
 
 ## Checking a release
 

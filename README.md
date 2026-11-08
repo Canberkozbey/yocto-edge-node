@@ -86,7 +86,7 @@ report from it, as CI's hardware job does; that build needs network access
 
 | Image | For | Access | License policy |
 | --- | --- | --- | --- |
-| `edgenode-image` | Production | Root account locked, no password login; SSH takes root by key only, and the image holds no key ([SECURITY.md](SECURITY.md)) | No (L/A)GPLv3; the build fails otherwise |
+| `edgenode-image` | Production | Root account locked, no password login; SSH lets root in only with a key provisioned on the node's data partition, as the image holds none ([ADR 0012](docs/adr/0012-administrators-ssh-keys-on-the-data-partition.md)) | No (L/A)GPLv3; the build fails otherwise |
 | `edgenode-image-dev` | Development | Root without a password on the console and over SSH; `gdbserver`, `strace` and `i2c-tools`; in QEMU, the vkms module for the display tests | None (`gdbserver` is GPLv3) |
 
 The development image is the production image plus those extras
@@ -193,16 +193,19 @@ What the tests check:
   each root filesystem's hash tree checks out against that hash, and each
   update bundle carries this build's slots byte for byte, signed by a
   certificate for code signing that chains to the CA in the image it
-  carries, and the images trust the CA that CI names; on the board, the
+  carries, and the images trust the CA that CI names; both images' sshd
+  takes root's keys from `/data` as well as from root's home, and other
+  accounts' from their home only; on the board, the
   root filesystem is the verity device and cannot be written, an update
   boots on trial and is committed, a power cut before the trial boot or
   during installation keeps the running slot, a release whose service fails
   and a root filesystem changed by one block both roll back by themselves,
   bundles with a broken signature or payload are rejected, and the hardware
-  watchdog resets a hung kernel; the SSH host keys and an MQTT identity
-  provisioned on `/data` (the key readable by root only) bring the node
-  online over mutual TLS, end up readable by the daemon's group only, and
-  are still the node's after an update
+  watchdog resets a hung kernel; an MQTT identity provisioned on `/data`
+  (the key readable by root only) brings the node online over mutual TLS
+  and ends up readable by the daemon's group only; an administrator's SSH
+  key provisioned there lets root in, where it did not before; after an
+  update, the node keeps its SSH host keys, its identity and that key
 
 Each production check has a control in the development image that must give
 the opposite result, so a check that cannot tell the two apart fails.
@@ -292,6 +295,10 @@ and `cryptsetup-bin`, and the update signing keys in `~/yocto/keys`
   SSH host keys stay there too. Details:
   [ADR 0011](docs/adr/0011-device-identity-and-mqtt-over-mutual-tls.md),
   [docs/provisioning.md](docs/provisioning.md).
+- **Administrators' SSH keys on the data partition.** The production image
+  has no password login and holds no key; root's keys provisioned on a
+  node's `/data` are its only remote login. Details:
+  [ADR 0012](docs/adr/0012-administrators-ssh-keys-on-the-data-partition.md).
 
 ## Roadmap
 

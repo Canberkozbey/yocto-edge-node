@@ -74,8 +74,9 @@ command line, so RAUC cannot tell which slot runs.
 
 ## Installing an update
 
-On the node, from the development image (the production image has no
-remote login, SECURITY.md):
+On the node, here from the development image (the production image lets
+root in over SSH only with a key provisioned on its data partition,
+docs/provisioning.md):
 
 ```sh
 ssh root@192.168.1.164 'cat > /tmp/update.raucb' < edgenode-bundle-dev-raspberrypi5.raucb
@@ -119,7 +120,9 @@ mounted read-only: nothing on it changes, not even as root. Logs and other
 state are on tmpfs and gone after a reboot; what must survive goes to
 `/data`. The SSH host keys are there too, made on the first boot from the
 card, so clients see the same host key after reboots and updates
-([ADR 0011](adr/0011-device-identity-and-mqtt-over-mutual-tls.md)).
+([ADR 0011](adr/0011-device-identity-and-mqtt-over-mutual-tls.md)), and so
+are the keys that may log in as root
+([ADR 0012](adr/0012-administrators-ssh-keys-on-the-data-partition.md)).
 
 ## The tests
 

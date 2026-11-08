@@ -299,6 +299,19 @@ def test_images_run_from_a_read_only_root(prod, dev):
         assert host_keys and all(key.startswith("/var/run/ssh/") for key in host_keys)
 
 
+def test_root_ssh_keys_also_on_the_data_partition(prod, dev):
+    # Root's keys: those in its home, then those provisioned on the data
+    # partition (docs/adr/0012). Other accounts keep the keys in their home.
+    # Both configurations: a read-only root runs sshd on sshd_config_readonly.
+    for image in (prod, dev):
+        for config in ("/etc/ssh/sshd_config", "/etc/ssh/sshd_config_readonly"):
+            where = f"{image.manifest.name}, {config}"
+            root = image.sshd_settings(config, user="root").get("authorizedkeysfile", "")
+            assert root.split() == [".ssh/authorized_keys", "/data/ssh/authorized_keys"], where
+            other = image.sshd_settings(config, user="daemon").get("authorizedkeysfile", "")
+            assert "/data/" not in other, where
+
+
 def test_hardware_watchdog_configured(prod):
     conf = prod.read_file("/usr/lib/systemd/system.conf.d/10-watchdog-edgenode.conf")
     assert "RuntimeWatchdogSec=15s" in conf.splitlines()

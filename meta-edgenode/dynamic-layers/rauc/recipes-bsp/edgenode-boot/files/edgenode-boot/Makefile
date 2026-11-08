@@ -9,6 +9,7 @@ BINDIR     ?= $(PREFIX)/bin
 LIBEXECDIR ?= $(PREFIX)/libexec
 UNITDIR    ?= $(PREFIX)/lib/systemd/system
 GENERATORDIR ?= $(PREFIX)/lib/systemd/system-generators
+SYSCONFDIR ?= /etc
 
 CFLAGS   ?= -O2 -g
 WARNINGS := -Wall -Wextra -Wformat=2 -Wshadow -Wstrict-prototypes
@@ -26,6 +27,8 @@ install: edgenode-boot
 	install -D -m 0644 run-ssh.mount $(DESTDIR)$(UNITDIR)/run-ssh.mount
 	install -D -m 0755 edgenode-boot-generator \
 		$(DESTDIR)$(GENERATORDIR)/edgenode-boot-generator
+	install -D -m 0644 data-keys.conf \
+		$(DESTDIR)$(SYSCONFDIR)/ssh/sshd_config.d/50-edgenode-data-keys.conf
 	install -d -m 0755 $(DESTDIR)/data
 
 clean:

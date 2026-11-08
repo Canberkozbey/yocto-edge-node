@@ -4,7 +4,7 @@ firmware's autoboot.txt and its one-shot tryboot flag; RAUC calls it as its \
 custom bootloader backend. After each boot from a slot, \
 edgenode-boot-commit checks the node's service and commits the slot or \
 returns to the previous one. Also mounts the persistent data partition and \
-keeps the SSH host keys on it."
+keeps the SSH host keys and the administrators' SSH keys on it."
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 
@@ -22,12 +22,14 @@ do_install() {
         BINDIR=${bindir} \
         LIBEXECDIR=${libexecdir} \
         UNITDIR=${systemd_system_unitdir} \
-        GENERATORDIR=${systemd_unitdir}/system-generators
+        GENERATORDIR=${systemd_unitdir}/system-generators \
+        SYSCONFDIR=${sysconfdir}
 }
 
 # The units are not enabled: edgenode-boot-generator adds them to boots from
 # an A/B slot only. /data is the mount point, shipped in the image rather
-# than created at boot.
+# than created at boot. (The sshd drop-in is in ${sysconfdir}, which the
+# package takes by default.)
 FILES:${PN} += " \
     ${systemd_system_unitdir} \
     ${systemd_unitdir}/system-generators \

@@ -126,7 +126,7 @@ that were tested.
   lab board.
 - **Everything that must persist goes to `/data`:** RAUC's status, and
   since ADR 0011 the SSH host keys, the site's configuration and the node's
-  MQTT identity.
+  MQTT identity, and since ADR 0012 its administrators' SSH keys.
 - **Configuration changes need a new image.** `/etc` is part of the
   verified root filesystem.
 - **The `cmdline.txt` fallback** for a bootloader without

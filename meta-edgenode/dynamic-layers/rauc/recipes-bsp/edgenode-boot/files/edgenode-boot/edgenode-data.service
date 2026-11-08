@@ -1,8 +1,9 @@
 # Creates the directories on the data partition, right after it is mounted
 # and before any ordinary service starts: RAUC's status (system.conf) and
-# the SSH host keys (run-ssh.mount), each for root only. A tmpfiles.d entry
-# would run on every boot, and fail on a read-only root filesystem when the
-# partition is not mounted. Added to boots from an A/B slot only, by
+# SSH's, with the host keys (run-ssh.mount) and root's keys
+# (data-keys.conf), each for root only. A tmpfiles.d entry would run on
+# every boot, and fail on a read-only root filesystem when the partition is
+# not mounted. Added to boots from an A/B slot only, by
 # edgenode-boot-generator. (edgenoded makes its own site directory,
 # edgenoded-site.service.)
 [Unit]

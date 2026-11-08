@@ -1,6 +1,7 @@
 """Helpers shared by the test directories (dev, prod, image)."""
 
 import bz2
+import fnmatch
 import functools
 import hashlib
 import os
@@ -203,20 +204,34 @@ class Image:
                 package = None
         return licenses
 
-    def read_bytes(self, path):
-        """Reads a file from the ext4 image with debugfs; no mount, no root."""
+    def _debugfs(self, request, path):
+        """Runs one debugfs request on the ext4 image; no mount, no root."""
         if not self.ext4.is_file():
             # debugfs reports a missing image on stderr but still exits 0,
             # which would surface later as a confusing "not found" result.
             raise FileNotFoundError(f"image not built: {self.ext4}")
         debugfs = shutil.which("debugfs") or "/usr/sbin/debugfs"
         result = subprocess.run(
-            [debugfs, "-R", f"cat {path}", str(self.ext4)],
+            [debugfs, "-R", f"{request} {path}", str(self.ext4)],
             capture_output=True, check=True,
         )
         if b"File not found" in result.stderr:
             raise FileNotFoundError(f"{path} not in {self.ext4.name}")
         return result.stdout
+
+    def read_bytes(self, path):
+        """Reads a file from the ext4 image with debugfs."""
+        return self._debugfs("cat", path)
+
+    def list_dir(self, path):
+        """Names in a directory of the ext4 image, without . and .."""
+        names = []
+        # `ls -p` prints /inode/mode/uid/gid/name/size/ per entry.
+        for line in self._debugfs("ls -p", path).decode().splitlines():
+            fields = line.split("/")
+            if len(fields) >= 7 and fields[5] not in (".", ".."):
+                names.append(fields[5])
+        return sorted(names)
 
     def read_file(self, path):
         """Like read_bytes, for text files."""
@@ -229,15 +244,51 @@ class Image:
                 return fields
         raise KeyError(f"{user} not in /etc/shadow")
 
-    def sshd_settings(self):
-        """Active sshd_config settings, keys lowercased (sshd ignores case)."""
-        settings = {}
-        for line in self.read_file("/etc/ssh/sshd_config").splitlines():
-            line = line.strip()
-            if line and not line.startswith("#"):
-                key, _, value = line.partition(" ")
-                settings.setdefault(key.lower(), value.strip())
-        return settings
+    def sshd_settings(self, config="/etc/ssh/sshd_config", user=None):
+        """Settings of an sshd configuration for a login as `user`, keys
+        lowercased (sshd ignores case). As in sshd: the first value of a
+        setting counts; an Include reads its files, in name order, where it
+        stands; a Match block lasts until the next Match or the end of its
+        file, and its settings win over the global ones. Only `Match User`
+        and `Match all` are understood; anything else is an error."""
+        found = {"global": {}, "match": {}}
+        self._read_sshd_config(config, user, found)
+        return {**found["global"], **found["match"]}
+
+    def _read_sshd_config(self, path, user, found, match=None):
+        # match: None outside a Match block, else whether the block applies.
+        for line in self.read_file(path).splitlines():
+            parts = line.split(None, 1)
+            if not parts or parts[0].startswith("#"):
+                continue
+            key, value = parts[0].lower(), parts[1].strip() if len(parts) > 1 else ""
+            if key == "match":
+                match = sshd_match_applies(value, user, path)
+            elif match is False:
+                continue
+            elif key == "include":
+                for pattern in value.split():
+                    directory, _, name_glob = pattern.rpartition("/")
+                    try:
+                        names = self.list_dir(directory)
+                    except FileNotFoundError:
+                        names = []  # sshd skips an Include that matches nothing
+                    for name in names:
+                        if fnmatch.fnmatch(name, name_glob):
+                            self._read_sshd_config(f"{directory}/{name}", user, found, match)
+            else:
+                found["global" if match is None else "match"].setdefault(key, value)
+
+
+def sshd_match_applies(criteria, user, path):
+    """Whether an sshd Match block applies to a login as `user`."""
+    words = criteria.split()
+    if len(words) == 1 and words[0].lower() == "all":
+        return True
+    if len(words) == 2 and words[0].lower() == "user" and "!" not in words[1]:
+        return user is not None and any(fnmatch.fnmatchcase(user, pattern)
+                                        for pattern in words[1].split(","))
+    raise ValueError(f"{path}: Match {criteria}: only Match User and Match all are read")
 
 
 @dataclass

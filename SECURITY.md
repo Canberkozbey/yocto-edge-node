@@ -21,7 +21,7 @@ Fixes go to `main`; there is no maintained release branch.
 | Changed or corrupted software | The root filesystem is read-only and verified block by block by dm-verity; a slot that fails verification rolls back | [ADR 0009](docs/adr/0009-read-only-root-with-dm-verity.md) |
 | Forged or broken updates | Update bundles must be signed by a code-signing certificate from the CA in the image, and their payload is verified as it is read | [ADR 0008](docs/adr/0008-ab-updates-with-rauc-and-tryboot.md), [ADR 0010](docs/adr/0010-sbom-cve-reports-and-signed-releases.md) |
 | Development builds on released nodes | Releases are signed with separate keys, kept in a GitHub environment and offline; released images trust only the release CA | [docs/releases.md](docs/releases.md) |
-| Logging in | The production image has no password login; SSH takes root by key only, and the image holds no key | [README](README.md#images) |
+| Logging in | The production image has no password login. SSH takes root by key only, and the image holds no key: only keys provisioned on a node's data partition let root in | [ADR 0012](docs/adr/0012-administrators-ssh-keys-on-the-data-partition.md) |
 | A compromised service | `edgenoded` runs as a dynamic user, with no capabilities, a system call filter and a read-only view of the system | its unit, `edgenoded.service` |
 | Eavesdropping on or faking the broker or the node | MQTT runs over mutual TLS: each side checks the other's certificate, the broker's against its address; the node's key is readable only by `edgenoded`'s group | [ADR 0011](docs/adr/0011-device-identity-and-mqtt-over-mutual-tls.md) |
 | Unknown software and known CVEs | Each image has an SBOM, a CVE report and, for releases, build provenance attestations | [ADR 0010](docs/adr/0010-sbom-cve-reports-and-signed-releases.md) |
@@ -32,8 +32,9 @@ Fixes go to `main`; there is no maintained release branch.
   signing key would have to be programmed into its OTP memory, which is
   irreversible and deliberately not done on the lab's board. Whoever holds
   the SD card can change the boot partitions, and with them the root hash
-  that dm-verity checks against. The data partition, with the node's MQTT
-  key, is not encrypted.
+  that dm-verity checks against. The data partition is neither encrypted
+  nor verified: whoever holds the card can copy the node's MQTT key, or add
+  an SSH key that logs in as root.
 - **The local network reading the node.** `edgenoded`'s HTTP API (port
   8080) is read-only, unauthenticated and plain HTTP: health and sensor
   readings, for the local network. Anyone who can reach the node can read

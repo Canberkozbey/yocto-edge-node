@@ -42,12 +42,13 @@ def test_root_account_locked_in_prod(prod, dev):
 
 
 def test_sshd_policy(prod, dev):
-    prod_cfg = prod.sshd_settings()
+    # For root's logins, so a Match block for root counts too.
+    prod_cfg = prod.sshd_settings(user="root")
     # Unset means the OpenSSH default: no empty passwords, root by key only.
     assert prod_cfg.get("permitemptypasswords", "no") == "no"
     assert prod_cfg.get("permitrootlogin", "prohibit-password") != "yes"
 
-    dev_cfg = dev.sshd_settings()  # control
+    dev_cfg = dev.sshd_settings(user="root")  # control
     assert dev_cfg.get("permitemptypasswords") == "yes"
     assert dev_cfg.get("permitrootlogin") == "yes"
 

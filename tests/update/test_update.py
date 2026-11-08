@@ -3,6 +3,8 @@ root filesystem, and the node's identity on the data partition, which
 updates keep. The tests run in order; each starts where the one before left
 the board (conftest.py)."""
 
+import base64
+import hashlib
 import os
 import re
 import shutil
@@ -10,6 +12,7 @@ import subprocess
 import time
 from types import SimpleNamespace
 
+import paramiko
 import pytest
 
 import helpers
@@ -79,6 +82,24 @@ def connected_over_tls(shell, timeout=90):
 
 def host_keys(shell):
     return sorted(shell.run_check("cat /run/ssh/*.pub"))
+
+
+def root_logs_in_with(shell, target, key):
+    """Root logs in over SSH with `key`, and sshd says it took that key: the
+    development image would also take root without a password."""
+    address = target.get_resource("NetworkService").address
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        client.connect(address, username="root", pkey=key, look_for_keys=False,
+                       allow_agent=False, timeout=10, banner_timeout=30)
+    except paramiko.AuthenticationException:
+        return False
+    finally:
+        client.close()
+    fingerprint = base64.b64encode(hashlib.sha256(key.asbytes()).digest()).decode().rstrip("=")
+    return shell.run("journalctl -b --no-pager | grep -F 'Accepted publickey for root' | "
+                     f"grep -qF 'SHA256:{fingerprint}'")[2] == 0
 
 
 def ls_mode(shell, path):
@@ -161,13 +182,22 @@ def test_hardware_watchdog_is_armed(sd_card):
     assert int(sd_card.run_check(f"cat {watchdog}/timeout")[0]) <= 15
 
 
-def test_node_identity_lives_on_the_data_partition(sd_card, ssh_target, site):
+def test_node_identity_lives_on_the_data_partition(target, sd_card, ssh_target, site):
     shell = sd_card
     # The SSH host keys: made on the card's first boot, on /data.
     mounts = [line.split() for line in shell.run_check("cat /proc/mounts")]
     assert ["/dev/mmcblk0p6", "/run/ssh"] in [m[:2] for m in mounts]
     site.host_keys = host_keys(shell)
     assert site.host_keys
+
+    # Root's keys: an administrator's key provisioned on /data lets root in,
+    # the production image's only remote login (docs/adr/0012).
+    site.admin_key = paramiko.ECDSAKey.generate()
+    assert not root_logs_in_with(shell, target, site.admin_key)  # control
+    public = f"{site.admin_key.get_name()} {site.admin_key.get_base64()} edgenode-test"
+    shell.run_check(f"printf '%s\\n' '{public}' > /data/ssh/authorized_keys && "
+                    "chmod 0600 /data/ssh/authorized_keys")
+    assert root_logs_in_with(shell, target, site.admin_key)
 
     # Provisioned as a site might: the key readable by root only. The site
     # unit gives the daemon's group read access, and nobody else.
@@ -202,9 +232,10 @@ def test_update_boots_the_other_slot_on_trial_and_commits_it(target, sd_card, ss
     # edgenoded came up, so the commit service made B the default.
     assert committed(shell, "B")
     assert rauc_status(shell)[:2] == ("B", "rootfs.1")
-    # The node is still itself: the same SSH host keys, and the same MQTT
-    # identity and site configuration, all from /data.
+    # The node is still itself: the same SSH host keys and root's keys, and
+    # the same MQTT identity and site configuration, all from /data.
     assert host_keys(shell) == site.host_keys
+    assert root_logs_in_with(shell, target, site.admin_key)
     assert connected_over_tls(shell), "\n".join(shell.run("journalctl -b -u edgenoded")[0])
 
 

@@ -10,6 +10,10 @@ keep. Each node needs:
 The SSH host keys live there too; the node makes them on its first boot.
 The reasons are in [ADR 0011](adr/0011-device-identity-and-mqtt-over-mutual-tls.md).
 
+So do the public SSH keys of whoever administers the node, if anyone does:
+on the production image, they are the only remote login
+([ADR 0012](adr/0012-administrators-ssh-keys-on-the-data-partition.md)).
+
 ## What goes where
 
 | Path on the node | What it is |
@@ -19,10 +23,17 @@ The reasons are in [ADR 0011](adr/0011-device-identity-and-mqtt-over-mutual-tls.
 | `/data/edgenode/mqtt/node.cert.pem` | The node's certificate, from the CA that the broker trusts for clients |
 | `/data/edgenode/mqtt/node.key.pem` | The node's key |
 | `/data/ssh/` | The SSH host keys, made on the first boot from the card |
+| `/data/ssh/authorized_keys` | Public keys that may log in as root over SSH, one per line; optional |
 
 At every boot, `edgenoded-site.service` gives `/data/edgenode` to
 `root:edgenode-identity`, directories 0750 and files 0640, so only
-edgenoded's group can read it. File modes from provisioning do not matter.
+edgenoded's group can read it. File modes from provisioning do not matter
+there.
+
+They do for `/data/ssh`: sshd ignores a key file that anyone but root could
+change, through the file or a directory above it. Keep the directory root's
+with mode 0700, as the node makes it when it is missing, and
+`authorized_keys` root's with mode 0600.
 
 The site's configuration uses the keys of `/etc/edgenoded.conf`, for
 example:
@@ -135,9 +146,22 @@ which check failed:
 - `certificate has expired` or `certificate is not yet valid`: check the
   certificate's dates, and the node's clock.
 
+An administrator's key is added the same way, here the build host user's
+own:
+
+```sh
+ssh root@192.168.1.164 'cat >> /data/ssh/authorized_keys && chmod 0600 /data/ssh/authorized_keys' \
+    < ~/.ssh/id_ed25519.pub
+```
+
+On the production image, that key is then the only way in over SSH.
+
 The production image has no password login. There the files go onto the
 card's data partition before the card goes into the node: the sixth
 partition, an ext4 file system, under `edgenode/` as in the table above.
+An administrator's key goes under `ssh/authorized_keys` there, the
+directory and the file root's, with modes 0700 and 0600; that key then
+logs in as root over SSH.
 
 ## In production
 
