@@ -94,9 +94,9 @@ systemctl start edgenoded
    overlays and `cmdline.txt`.
 3. The kernel configures `eth0` with the Pi's reserved address, set
    statically on the kernel command line, and mounts its root filesystem
-   over NFS. Static, because the router did not always give the kernel's
-   own DHCP client the reserved address, and both the NFS export and the
-   tests expect that one.
+   over NFS, read-only like the SD card's. Static, because the router did
+   not always give the kernel's own DHCP client the reserved address, and
+   both the NFS export and the tests expect that one.
 4. When the directory for the Pi is missing, network boot fails and the
    bootloader boots the SD card instead.
 
@@ -114,8 +114,9 @@ Deploy while the Pi is off or about to be power-cycled: replacing the root
 filesystem under a running system breaks it.
 
 Network boot trusts the LAN, as it must: TFTP serves the boot files to any
-host that asks, and NFS lets whoever has the Pi's address read and change
-the served root filesystem as root. The images it serves hold no secrets,
+host that asks, and NFS lets whoever has the Pi's address read the served
+root filesystem as root. The export is read-only, so nobody can change
+what the next boot runs that way. The images it serves hold no secrets,
 but the lab belongs on a network you trust.
 
 ## Build host setup (once)

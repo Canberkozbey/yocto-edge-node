@@ -54,13 +54,18 @@ def netboot_cmdline(sd_cmdline, server, nfs_path, address, network):
     Configuring the interface on the command line also keeps
     systemd-networkd away from it: oe-core's wired.network does not match
     when the command line has nfsroot or ip.
+
+    The root filesystem is mounted read-only, as from the SD card: the
+    images run on a read-only root (docs/adr/0009). Mounted read-write,
+    systemd-remount-fs had to remount it read-only during the boot, which
+    failed once in CI and left the system degraded.
     """
     sd_root_args = ("root=", "rootfstype=", "rootwait")
     kept = [arg for arg in sd_cmdline.split() if not arg.startswith(sd_root_args)]
     # ip=<client>:<server>:<gateway>:<netmask>:<hostname>:<device>:<autoconf>:<dns0>
     ip = (f"ip={address}:{server}:{network['gateway']}:{network['netmask']}"
           f"::eth0:off:{network['dns']}")
-    nfs = ["root=/dev/nfs", f"nfsroot={server}:{nfs_path},vers=3,tcp", ip, "rw"]
+    nfs = ["root=/dev/nfs", f"nfsroot={server}:{nfs_path},vers=3,tcp", ip, "ro"]
     return " ".join(kept + nfs)
 
 

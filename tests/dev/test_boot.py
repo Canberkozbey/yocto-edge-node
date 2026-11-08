@@ -9,6 +9,17 @@ def test_boot_completes_without_failed_units(shell):
     assert state == ["running"], f"system is {state}, failed units: {failed}"
 
 
+def test_network_boot_mounts_the_root_read_only(shell):
+    # As from the SD card: the image runs on a read-only root
+    # (docs/adr/0009), and systemd-remount-fs then has nothing to change.
+    # Remounting an NFS root read-only during the boot failed once in CI
+    # (tools/netboot.py).
+    cmdline = shell.run_check("cat /proc/cmdline")[0].split()
+    if not any(arg.startswith("nfsroot=") for arg in cmdline):
+        pytest.skip("not a network boot")
+    assert "ro" in cmdline and "rw" not in cmdline, cmdline
+
+
 def test_runs_edgenode_distro(shell):
     os_release = dict(
         line.split("=", 1) for line in shell.run_check("cat /etc/os-release") if "=" in line
