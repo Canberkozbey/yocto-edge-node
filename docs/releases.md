@@ -148,6 +148,6 @@ The release workflow (`.github/workflows/release.yml`) then:
   identity that attestations are signed for: no code that runs during the
   build, on the self-hosted runner, can do either.
 
-If a step fails, nothing is published. Fix the cause, delete the tag
-(`git push origin :refs/tags/v0.1.0` and `git tag -d v0.1.0`), and tag
-again.
+If a step fails, nothing is published. Fix the cause and release the next
+version (`DISTRO_VERSION` 0.1.1, tag `v0.1.1`): the tag ruleset keeps the
+failed tag where it is, and no version number is used twice.
