@@ -40,11 +40,20 @@ example, installs Wi-Fi and Bluetooth firmware for every image.
     core built in (the BSP's `vc4graphics.cfg`). All three stay modules,
     as in the kernel's own configuration, and the images install only the
     DRM modules the panel driver depends on.
-- `tests/image/test_artifacts.py` checks that no wireless firmware is
-  installed and, on the Raspberry Pi 5, that both radio overlays are in
-  `config.txt` and no VC4 overlay is. On the board,
+- Third application: **one log, the journal.** `packagegroup-core-boot`
+  recommends a syslog daemon, BusyBox's by default
+  (`VIRTUAL-RUNTIME_base-utils-syslog`). Next to journald it took
+  `/dev/log` over, so whatever logged through syslog, sshd's logins among
+  them, went to BusyBox's log and never reached the journal. `edgenode.conf`
+  empties the variable, so no syslog daemon is installed, and journald
+  does not forward to one (`ForwardToSyslog=no`).
+- `tests/image/test_artifacts.py` checks that no wireless firmware and no
+  syslog daemon is installed and, on the Raspberry Pi 5, that both radio
+  overlays are in `config.txt` and no VC4 overlay is. On the board,
   `tests/dev/test_display.py` checks that no VC4 or sound driver registers
-  and that the panel is the only DRM device.
+  and that the panel is the only DRM device. On every machine,
+  `tests/dev/test_boot.py` checks that an SSH login shows up in the
+  journal.
 
 ## Alternatives considered
 
@@ -63,3 +72,6 @@ example, installs Wi-Fi and Bluetooth firmware for every image.
   firmware removal and the overlays, and record why in a new ADR.
 - A display on HDMI would bring VC4 back: drop `DISABLE_VC4GRAPHICS` and
   record why.
+- Logs leave the node only through journald. A log server for a fleet
+  would take them from there (`systemd-journal-upload`, or a forwarder
+  that reads the journal) and comes with its own ADR.

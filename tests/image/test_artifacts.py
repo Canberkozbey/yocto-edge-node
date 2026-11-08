@@ -16,6 +16,8 @@ GRAPHICS_PACKAGE = re.compile(
 # Wi-Fi and Bluetooth firmware from the Raspberry Pi BSP. The node is wired
 # only (docs/adr/0003).
 WIRELESS_FIRMWARE = re.compile(r"^(linux-firmware-rpidistro|bluez-firmware)")
+# Packages with a syslog daemon; the journal is the only log (docs/adr/0003).
+SYSLOG_DAEMONS = {"busybox-syslog", "rsyslog", "sysklogd", "syslog-ng"}
 # systemd drop-in that gives edgenoded the device access a display needs
 DISPLAY_DROP_IN = "/usr/lib/systemd/system/edgenoded.service.d/display.conf"
 
@@ -63,6 +65,16 @@ def test_no_wireless_firmware(prod, dev):
     for image in (prod, dev):
         offenders = sorted(p for p in image.packages if WIRELESS_FIRMWARE.match(p))
         assert not offenders, f"{image.manifest.name}: {offenders}"
+
+
+def test_journald_is_the_only_log(prod, dev):
+    # No syslog daemon: BusyBox's took /dev/log over from journald, and
+    # sshd's logins with it (docs/adr/0003).
+    for image in (prod, dev):
+        offenders = sorted(SYSLOG_DAEMONS & image.packages)
+        assert not offenders, f"{image.manifest.name}: {offenders}"
+        journald = image.read_file("/usr/lib/systemd/journald.conf.d/10-edgenode.conf")
+        assert "ForwardToSyslog=no" in journald.splitlines()
 
 
 def test_both_images_run_edgenoded(prod, dev):

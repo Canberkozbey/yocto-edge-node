@@ -2,6 +2,8 @@
 
 import pytest
 
+import helpers
+
 
 def test_boot_completes_without_failed_units(shell):
     state = shell.run("systemctl is-system-running")[0]
@@ -18,6 +20,18 @@ def test_network_boot_mounts_the_root_read_only(shell):
     if not any(arg.startswith("nfsroot=") for arg in cmdline):
         pytest.skip("not a network boot")
     assert "ro" in cmdline and "rw" not in cmdline, cmdline
+
+
+def test_ssh_logins_are_in_the_journal(shell, ssh_address):
+    # sshd logs through syslog (/dev/log), which only journald may read: the
+    # journal is the node's only log (docs/adr/0003).
+    def logins():
+        out = shell.run("journalctl -b --no-pager -o cat | grep -c 'Accepted .* for root from'")[0]
+        return int(out[0]) if out else 0
+
+    before = logins()
+    assert helpers.ssh_accepts_empty_password(*ssh_address, user="root")
+    assert helpers.wait_until(lambda: logins() > before, timeout=10)
 
 
 def test_runs_edgenode_distro(shell):

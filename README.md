@@ -144,7 +144,9 @@ sudo tools/netboot.py deploy edgenode-image-dev --images "$LG_IMAGES"
 
 What the tests check:
 
-- boot finishes with no failed units, on the `edgenode` distro, with systemd as init
+- boot finishes with no failed units, on the `edgenode` distro, with systemd as init;
+  a network boot mounts the root filesystem read-only, as the SD card does; an SSH
+  login shows up in the journal, the node's only log
 - `edgenoded` is active, runs as an unprivileged user and has its watchdog armed
 - `/health` answers on the target and from the host, and reports the installed version;
   a client that sends its request a byte at a time is cut off after 2 s and
@@ -173,7 +175,7 @@ What the tests check:
 - production: root's console login asks for a password, SSH rejects root
   without one, root's password field is locked, sshd allows neither empty
   passwords nor root password logins, and no debug tools are installed
-- no graphics stack slipped into either image, and nothing under (L/A)GPLv3 in the production image (from the license manifests)
+- no graphics stack and no syslog daemon slipped into either image, and nothing under (L/A)GPLv3 in the production image (from the license manifests)
 - each image's SBOM (SPDX 3.0) has every installed package; where the build
   ran the CVE check, each image has a CVE report that covers the kernel and
   the node's own service (report only: known CVEs do not fail the build)
