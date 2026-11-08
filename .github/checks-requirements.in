@@ -1,0 +1,10 @@
+# Linters for the checks workflow (checks.yml). checks-requirements.txt pins
+# them with the hashes of their files. After a change here, from the
+# repository's root:
+#
+#   uv pip compile .github/checks-requirements.in --python-version 3.12 \
+#       --python-platform x86_64-unknown-linux-gnu --generate-hashes \
+#       -o .github/checks-requirements.txt
+pyflakes==4.0.3
+shellcheck-py==0.11.0.1
+zizmor==1.31.1

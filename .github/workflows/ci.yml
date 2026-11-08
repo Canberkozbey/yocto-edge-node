@@ -1,17 +1,21 @@
-# Build the images and run the integration tests: in QEMU on every push and
-# pull request, then on the lab's Raspberry Pi 5 for pushes and manual runs,
-# A/B updates on its SD card included.
+# Build the images and run the integration tests: in QEMU, then on the lab's
+# Raspberry Pi 5, A/B updates on its SD card included. For pushes to main and
+# manual runs.
 #
 # Runs on a self-hosted runner: a Yocto build needs more memory and disk
 # than GitHub's hosted runners offer, and the runner keeps the download and
 # shared state caches between runs, so a typical run takes minutes.
+#
+# Never for pull requests: the runner is the lab's build host, and a pull
+# request from a fork could run any code there. Pull requests get the
+# checks in checks.yml, on GitHub's hosted runners; the runner itself
+# refuses any job but these (lab/runner/job-started.sh, docs/adr/0005).
 
 name: CI
 
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
 
 # One build at a time per branch; a newer push cancels the older run.
@@ -33,6 +37,8 @@ jobs:
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up work and cache directories
         run: |
@@ -85,9 +91,6 @@ jobs:
     # boot and reaches its serial console and smart plug (docs/lab.md).
     runs-on: [self-hosted, linux, x64, yocto]
     needs: qemuarm64
-    # Hardware runs only for this repository's own pushes and manual runs,
-    # never for pull requests (docs/adr/0005).
-    if: github.event_name != 'pull_request'
     timeout-minutes: 480
     # One run at a time owns the Pi, whatever the branch.
     concurrency:
@@ -101,6 +104,8 @@ jobs:
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up work and cache directories
         run: |

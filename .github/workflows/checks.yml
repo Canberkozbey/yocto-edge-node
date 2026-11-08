@@ -1,0 +1,58 @@
+# Checks that need no build: the workflows (actionlint, and zizmor for
+# their security), the shell scripts (shellcheck) and the Python code
+# (pyflakes). On a GitHub hosted runner, so they also run for pull requests
+# from forks, which never reach the lab's self-hosted runner (ci.yml,
+# docs/adr/0005).
+
+name: Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the linters
+        # Pinned: the Python ones with the hashes of their files, actionlint
+        # with the checksum of its release.
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          python3 -m venv "$RUNNER_TEMP/lint"
+          "$RUNNER_TEMP/lint/bin/pip" install --quiet --require-hashes -r .github/checks-requirements.txt
+          archive="$RUNNER_TEMP/actionlint.tar.gz"
+          curl -fsSL -o "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSION/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "$ACTIONLINT_SHA256  $archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$RUNNER_TEMP/lint/bin" actionlint
+          echo "$RUNNER_TEMP/lint/bin" >> "$GITHUB_PATH"
+
+      - name: Workflows
+        run: |
+          actionlint
+          zizmor --offline .github/workflows
+
+      - name: Shell scripts
+        run: |
+          shellcheck tools/*.sh lab/runner/*.sh \
+            meta-edgenode/dynamic-layers/rauc/recipes-bsp/edgenode-boot/files/edgenode-boot/edgenode-boot-generator \
+            meta-edgenode/dynamic-layers/rauc/recipes-bsp/edgenode-boot/files/edgenode-boot/edgenode-boot-commit \
+            meta-edgenode/recipes-edgenode/edgenoded/files/edgenoded/edgenoded-site
+
+      - name: Python
+        run: pyflakes tests tools meta-edgenode

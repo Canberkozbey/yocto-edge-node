@@ -50,10 +50,11 @@ The images carry no graphics stack (ADR 0003, and
   `edgenoded`, in the panel's mode, and that the console takes the panel
   back when the service stops.
 - In QEMU, vkms (a virtual KMS display, built as a module for the QEMU
-  development image only) stands in for the panel, so CI exercises the
-  display code on every pull request. vkms computes a CRC of each frame it
-  composes: `tests/dev/test_screen.py` checks that the CRC holds still
-  while nothing changes (the control) and changes after a reading does.
+  development image only) stands in for the panel, so CI's QEMU job
+  exercises the display code without the board. vkms computes a CRC of
+  each frame it composes: `tests/dev/test_screen.py` checks that the CRC
+  holds still while nothing changes (the control) and changes after a
+  reading does.
 - What the screen looks like is a manual check (docs/lab.md).
 
 ## Alternatives considered

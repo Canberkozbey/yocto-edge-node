@@ -1,0 +1,14 @@
+# Test dependencies. tests/requirements.txt pins them, and every package
+# they pull in, with the hashes of their files: pip then installs exactly
+# those files, also on the self-hosted CI runner, which installs them on
+# every run (docs/adr/0005). Resolved for the build host's Python, 3.12 on
+# Linux x86_64. After a change here, regenerate it with uv
+# (https://docs.astral.sh/uv/), from the repository's root:
+#
+#   uv pip compile tests/requirements.in --python-version 3.12 \
+#       --python-platform x86_64-unknown-linux-gnu --generate-hashes \
+#       -o tests/requirements.txt
+labgrid==26.0.1
+paho-mqtt==2.1.0
+paramiko==5.1.0
+pytest==9.2.0

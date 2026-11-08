@@ -6,6 +6,12 @@
 #
 # Tag a commit only once CI has passed on it: the release checks that, and
 # does not repeat the hardware tests.
+#
+# Two jobs. The build runs on the lab's self-hosted runner with the release
+# keys and read-only access to the repository. Publishing runs on a GitHub
+# hosted runner: only it can create the release and get the identity that
+# attestations are signed for, so no code of the build (layers, build
+# tools, test dependencies) ever holds either.
 
 name: Release
 
@@ -21,17 +27,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Release (Raspberry Pi 5)
+  build:
+    name: Build (Raspberry Pi 5)
     runs-on: [self-hosted, linux, x64, yocto]
     timeout-minutes: 480
     # The release keys are this environment's secrets; the environment
     # accepts only v* tags (docs/releases.md).
     environment: release
     permissions:
-      contents: write      # create the release
-      id-token: write      # attestations: the identity Sigstore certifies
-      attestations: write  # attestations: store them with the repository
+      contents: read
       actions: read        # find CI's runs for this commit
     defaults:
       run:
@@ -64,8 +68,8 @@ jobs:
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Check that CI passed for this commit
-        # A successful CI run of a push or a manual run: those include the
-        # hardware tests, which pull requests skip (ci.yml).
+        # A successful CI run of a push to main or a manual run, which
+        # include the hardware tests (ci.yml).
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -173,18 +177,15 @@ jobs:
           tools/release-notes.sh "$VERSION" release "release/$name.cve.json" > release-notes.md
           cat release-notes.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+      - name: Hand the release files to the publishing job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          subject-path: release/*
-
-      - name: Publish the release
-        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
-        with:
-          name: Edge Node ${{ env.VERSION }}
-          body_path: release-notes.md
-          files: release/*
-          fail_on_unmatched_files: true
+          name: release
+          path: |
+            release/
+            release-notes.md
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Upload test logs
         if: always()
@@ -193,3 +194,33 @@ jobs:
           name: test-logs-release
           path: test-logs/
           if-no-files-found: ignore
+
+  publish:
+    name: Attest and publish
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write      # create the release
+      id-token: write      # attestations: the identity Sigstore certifies
+      attestations: write  # attestations: store them with the repository
+
+    steps:
+      - name: Get the release files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release/*
+
+      - name: Publish the release
+        # GitHub's CLI, installed on GitHub's hosted runners.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          gh release create "$GITHUB_REF_NAME" release/* --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --title "Edge Node $version" --notes-file release-notes.md

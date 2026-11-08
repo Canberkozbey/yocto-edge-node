@@ -1,6 +1,12 @@
 """edgenoded runs as intended and serves its health endpoint."""
 
 import json
+import socket
+import threading
+import time
+import urllib.parse
+
+import pytest
 
 import helpers
 
@@ -42,3 +48,39 @@ def test_health_reports_installed_version(shell, edgenoded_url):
 def test_unknown_path_is_404(edgenoded_url):
     status, _ = helpers.http_get(f"{edgenoded_url}/no-such-endpoint")
     assert status == 404
+
+
+def test_slow_client_cannot_hold_the_service(edgenoded_url):
+    # A client gets 2 s in all to send its request, however it spreads the
+    # bytes. Without that limit, one client sending a byte now and then held
+    # the service's loop: no answers, and past the watchdog a restart, which
+    # also fails a trial boot (edgenode-boot-commit).
+    url = urllib.parse.urlsplit(edgenoded_url)
+    slow = socket.create_connection((url.hostname, url.port), timeout=10)
+    cut_off = threading.Event()
+
+    def trickle():
+        stop = time.monotonic() + 10
+        try:
+            while time.monotonic() < stop:
+                slow.send(b"G")
+                time.sleep(0.5)
+        except OSError:
+            cut_off.set()
+
+    thread = threading.Thread(target=trickle)
+    thread.start()
+    try:
+        time.sleep(0.5)
+        start = time.monotonic()
+        try:
+            status, _ = helpers.http_get(f"{edgenoded_url}/health", timeout=8)
+        except TimeoutError:
+            pytest.fail("/health got no answer behind a slow client")
+        waited = time.monotonic() - start
+        assert status == 200
+        assert waited < 4, f"/health took {waited:.1f} s behind a slow client"
+        assert cut_off.wait(timeout=6), "the slow client was not cut off"
+    finally:
+        slow.close()
+        thread.join()

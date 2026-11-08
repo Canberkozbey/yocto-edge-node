@@ -574,13 +574,16 @@ static void route(int fd, char *request, const struct config *cfg,
 }
 
 /*
- * One request per connection, served inline. A slow client holds the loop
- * for at most CLIENT_TIMEOUT_S per direction, well inside the watchdog
- * interval.
+ * One request per connection, served inline. A client has CLIENT_TIMEOUT_S
+ * in all to send its request, however it spreads the bytes, so a slow one
+ * holds the loop that long at most: well inside the watchdog interval, and
+ * edgenode-boot-commit's check of a trial boot sees no restart. Sending the
+ * response, small enough for the socket buffer, gets the same timeout.
  */
 static void handle_client(int listen_fd, const struct config *cfg, long long start_ms)
 {
 	struct timeval timeout = { .tv_sec = CLIENT_TIMEOUT_S };
+	long long deadline = now_ms() + CLIENT_TIMEOUT_S * 1000LL;
 	char request[REQUEST_MAX + 1];
 	size_t used = 0;
 	int fd;
@@ -591,13 +594,21 @@ static void handle_client(int listen_fd, const struct config *cfg, long long sta
 			log_msg(PRI_WARN, "accept: %s", strerror(errno));
 		return;
 	}
-	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 	setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 
 	/* Read up to the end of the headers; no endpoint takes a body. */
 	request[0] = '\0';
 	while (used < REQUEST_MAX) {
-		ssize_t n = recv(fd, request + used, REQUEST_MAX - used, 0);
+		long long left = deadline - now_ms();
+		struct timeval wait;
+		ssize_t n;
+
+		if (left <= 0)
+			break;
+		wait.tv_sec = (time_t)(left / 1000);
+		wait.tv_usec = (suseconds_t)(left % 1000) * 1000;
+		setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof(wait));
+		n = recv(fd, request + used, REQUEST_MAX - used, 0);
 
 		if (n < 0 && errno == EINTR)
 			continue;

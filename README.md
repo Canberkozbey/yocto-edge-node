@@ -23,16 +23,17 @@ tests that run automatically, in QEMU and on real hardware.
 | `kas/machine/` | One file per target machine |
 | `kas/cve-check.yml` | Adds the CVE report to a build (CI's hardware job, releases) |
 | `kas/release.yml` | The release build: production image and bundle, signed with the release keys |
-| `tests/` | pytest integration tests against a running image |
+| `tests/` | pytest integration tests against a running image; `requirements.txt` pins their dependencies with hashes |
 | `tools/netboot.py` | Serves a built image to the lab's Raspberry Pi 5 over the network |
 | `tools/make-signing-keys.sh` | Creates the keys that sign update bundles, development or release, outside the repository |
 | `tools/cve-summary.py`, `tools/release-notes.sh` | The CVE summary and release notes that CI writes |
-| `lab/` | This lab's configuration: addresses, dnsmasq and NFS export files |
+| `lab/` | This lab's configuration: addresses, dnsmasq and NFS export files, the sudo rule for CI and the CI runner's job hook |
 | `docs/lab.md` | The test lab: hardware, wiring, network boot, host setup |
 | `docs/updates.md` | Updates: signing keys, SD card, installing a bundle |
 | `docs/releases.md` | Releases: what one holds, how to verify it, how CI makes it |
 | `docs/provisioning.md` | Provisioning a node: the site's configuration and its MQTT identity on the data partition |
 | `docs/adr/` | Architecture decision records |
+| `SECURITY.md` | Reporting a vulnerability, and what the node and the lab protect against and what they do not |
 | `docs/migration-kirkstone-to-wrynose.md` | Notes from moving from Yocto 4.0 habits to 6.0 |
 
 ## Build
@@ -85,7 +86,7 @@ report from it, as CI's hardware job does; that build needs network access
 
 | Image | For | Access | License policy |
 | --- | --- | --- | --- |
-| `edgenode-image` | Production | Root account locked, no password login; SSH root login by key only (OpenSSH default) | No (L/A)GPLv3; the build fails otherwise |
+| `edgenode-image` | Production | Root account locked, no password login; SSH takes root by key only, and the image holds no key ([SECURITY.md](SECURITY.md)) | No (L/A)GPLv3; the build fails otherwise |
 | `edgenode-image-dev` | Development | Root without a password on the console and over SSH; `gdbserver`, `strace` and `i2c-tools`; in QEMU, the vkms module for the display tests | None (`gdbserver` is GPLv3) |
 
 The development image is the production image plus those extras
@@ -145,7 +146,9 @@ What the tests check:
 
 - boot finishes with no failed units, on the `edgenode` distro, with systemd as init
 - `edgenoded` is active, runs as an unprivileged user and has its watchdog armed
-- `/health` answers on the target and from the host, and reports the installed version
+- `/health` answers on the target and from the host, and reports the installed version;
+  a client that sends its request a byte at a time is cut off after 2 s and
+  cannot hold up the service's answers
 - `/sensors` reads each configured analog input through IIO and scales it
   to millivolts, and reports an unreadable input without hiding the others
   (on every machine, against a stand-in IIO device made of plain files);
@@ -206,32 +209,45 @@ the opposite result, so a check that cannot tell the two apart fails.
 
 ## CI
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) has two jobs. The
-first builds both images for QEMU and runs the tests there, on every push to
-`main` and on pull requests. The second, for pushes and manual runs only,
-builds for the Raspberry Pi 5, serves each image to the lab's board over the
-network and runs the same tests on it, then writes its SD card and runs the
-update tests; how CI gets the privileges that takes is in
-[ADR 0005](docs/adr/0005-ci-on-lab-hardware.md). Both run on
-a self-hosted runner with the label `yocto`: a Yocto build needs more memory
-and disk than hosted runners offer, and the runner keeps the download and
-shared state caches between runs. Console logs and JUnit reports are kept
-as build artifacts. The hardware job also runs the CVE check
-(`kas/cve-check.yml`): it puts a CVE summary on the run's page and keeps
-the SBOMs and reports as artifacts.
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) has two jobs, for
+pushes to `main` and manual runs. The first builds both images for QEMU and
+runs the tests there. The second builds for the Raspberry Pi 5, serves each
+image to the lab's board over the network and runs the same tests on it,
+then writes its SD card and runs the update tests; how CI gets the
+privileges that takes is in [ADR 0005](docs/adr/0005-ci-on-lab-hardware.md).
+Both run on a self-hosted runner with the label `yocto`: a Yocto build needs
+more memory and disk than hosted runners offer, and the runner keeps the
+download and shared state caches between runs. Console logs and JUnit
+reports are kept as build artifacts. The hardware job also runs the CVE
+check (`kas/cve-check.yml`): it puts a CVE summary on the run's page and
+keeps the SBOMs and reports as artifacts.
+
+The self-hosted runner is the lab's build host, so it never takes a pull
+request: a pull request from a fork could run any code there. Pull requests
+get [`.github/workflows/checks.yml`](.github/workflows/checks.yml) instead,
+on a GitHub hosted runner: actionlint and zizmor for the workflows,
+shellcheck for the shell scripts and pyflakes for the Python code. The
+runner enforces this itself, whatever a workflow file says, with a hook
+that refuses every job but pushes to `main`, release tags and manual runs
+([`lab/runner/job-started.sh`](lab/runner/job-started.sh)). The test
+dependencies are pinned with the hashes of their files
+(`tests/requirements.txt`), as the runner installs them on every run.
 
 [`.github/workflows/release.yml`](.github/workflows/release.yml) makes a
-release from a `v*` tag on a commit that CI has passed: it builds the
-production image with the release keys, which only that job sees, runs the
-image tests, and publishes the SD card image, the update bundle, the SBOM,
-the CVE report and checksums, each with a build provenance attestation
-([docs/releases.md](docs/releases.md)).
+release from a `v*` tag on a commit that CI has passed. A job on the
+self-hosted runner builds the production image with the release keys,
+which only it sees, and runs the image tests; a second job, on a GitHub
+hosted runner, attests the files' build provenance and publishes them: the
+SD card image, the update bundle, the SBOM, the CVE report and checksums
+([docs/releases.md](docs/releases.md)). Only that second job can write
+releases and attestations, so no code that runs during the build can.
 
 Runner host requirements: Docker, kas (with `kas-container` on `PATH`),
 `qemu-system-arm`, `python3-venv`, `mosquitto` (the tests start their
 own broker; the system service can stay off), `mtools`, `squashfs-tools`
 and `cryptsetup-bin`, and the update signing keys in `~/yocto/keys`
-([docs/updates.md](docs/updates.md)).
+([docs/updates.md](docs/updates.md)). Its setup, the hook included, is in
+[docs/lab.md](docs/lab.md).
 
 ## Design notes
 

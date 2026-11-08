@@ -19,8 +19,9 @@ release holds, how to check one, and how to make one. The reasons are in
 
 The release notes list the release CA's fingerprint and summarise the CVE
 report. The image trusts only the release CA, so it installs only release
-bundles. A released node runs the production image: no password login, and
-SSH by key only.
+bundles. A released node runs the production image: no password login.
+Root may log in over SSH with a key only, and the image carries no key, so
+a released node has no remote login (SECURITY.md).
 
 ## Checking a release
 
@@ -92,6 +93,9 @@ On GitHub, in the repository's **Settings → Environments**:
 3. Under **Environment secrets**, add the three secrets in the table, each
    with the whole content of its file, `-----BEGIN` and `-----END` lines
    included.
+4. Optional: under **Deployment protection rules**, check **Required
+   reviewers** and add yourself. Each release then waits for your approval
+   before its build gets the keys.
 
 With the GitHub CLI, step 3 is:
 
@@ -137,8 +141,11 @@ The release workflow (`.github/workflows/release.yml`) then:
 - deletes the keys as soon as the build ends, whether it succeeded or not;
 - runs the image tests, which also check that both images trust the
   release CA and that no development bundle was built;
-- collects the files, writes `SHA256SUMS`, attests every file and
-  publishes the release.
+- collects the files and writes `SHA256SUMS`;
+- in a second job, on a GitHub hosted runner, attests every file and
+  publishes the release. Only that job may write releases and get the
+  identity that attestations are signed for: no code that runs during the
+  build, on the self-hosted runner, can do either.
 
 If a step fails, nothing is published. Fix the cause, delete the tag
 (`git push origin :refs/tags/v0.1.0` and `git tag -d v0.1.0`), and tag

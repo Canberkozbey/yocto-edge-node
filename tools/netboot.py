@@ -64,6 +64,19 @@ def netboot_cmdline(sd_cmdline, server, nfs_path, address, network):
     return " ".join(kept + nfs)
 
 
+def require_nosuid_nodev(path):
+    """Root extracts the caller's build output below `path`, owners, modes
+    and extended attributes included. On a mount without nosuid and nodev, a
+    set-user-ID file, a file capability or a device node in that output
+    would give whoever runs this tool root on this host; with them, those
+    only take effect on the Pi, which mounts the files over NFS (docs/lab.md,
+    docs/adr/0005)."""
+    flags = os.statvfs(path).f_flag
+    if not (flags & os.ST_NOSUID and flags & os.ST_NODEV):
+        sys.exit(f"refusing to serve from {path}: it must be on a mount with nosuid "
+                 f"and nodev (docs/lab.md, build host setup)")
+
+
 def replace_directory(path, parent):
     """Empties `path` (a directory inside `parent`), creating it if needed."""
     path, parent = path.resolve(), parent.resolve()
@@ -116,6 +129,8 @@ def deploy(config, image, images_dir):
     tftp_root, nfs_root = Path(netboot["tftp_root"]), Path(netboot["nfs_root"])
     nfs_dir = nfs_root / image
     tftp_dir = tftp_root / mac_directory(config["pi5"]["mac"])
+    for served in (nfs_root, tftp_root):
+        require_nosuid_nodev(served)
 
     # Root filesystem first: boot files must never point at a half-extracted one.
     print(f"root filesystem -> {nfs_dir}")

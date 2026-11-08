@@ -4,8 +4,21 @@
 /bitbake/
 /openembedded-core/
 /meta-yocto/
+/meta-openembedded/
 /meta-raspberrypi/
+/meta-rauc/
 /.kas_shell_history
+
+# Keys and CI runner credentials never belong here: keys live on the build
+# host and in GitHub's secrets (docs/updates.md, docs/releases.md), the
+# runner in its own directory (docs/lab.md). A guard against mistakes.
+*.key
+*.key.pem
+*-key.pem
+/actions-runner/
+.credentials
+.credentials_rsaparams
+.runner
 
 # Python
 .venv/

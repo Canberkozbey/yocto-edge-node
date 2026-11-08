@@ -113,17 +113,33 @@ sudo tools/netboot.py remove                                             # back 
 Deploy while the Pi is off or about to be power-cycled: replacing the root
 filesystem under a running system breaks it.
 
+Network boot trusts the LAN, as it must: TFTP serves the boot files to any
+host that asks, and NFS lets whoever has the Pi's address read and change
+the served root filesystem as root. The images it serves hold no secrets,
+but the lab belongs on a network you trust.
+
 ## Build host setup (once)
 
 ```sh
 sudo apt install dnsmasq nfs-kernel-server mtools squashfs-tools cryptsetup-bin zstd
 sudo mkdir -p /srv/edgenode/tftp /srv/edgenode/nfs /etc/exports.d
+echo '/srv/edgenode /srv/edgenode none bind,nosuid,nodev 0 0' | sudo tee -a /etc/fstab
+sudo systemctl daemon-reload
+sudo mount /srv/edgenode
 sudo cp lab/dnsmasq.d/edgenode.conf /etc/dnsmasq.d/
 sudo cp lab/exports.d/edgenode.exports /etc/exports.d/
 sudo exportfs -ra
 echo 'DNSMASQ_EXCEPT="lo"' | sudo tee -a /etc/default/dnsmasq
 sudo systemctl restart dnsmasq
 ```
+
+`/srv/edgenode` is mounted on itself with `nosuid` and `nodev`, and
+`tools/netboot.py` refuses to serve from anywhere else. It extracts a
+build's root filesystem as root, owners and modes included, so a
+set-user-ID file or a device node in it would otherwise work on this host
+too ([ADR 0005](adr/0005-ci-on-lab-hardware.md)). The options only affect
+this host: the Pi still sees and uses its files' modes over NFS.
+`findmnt /srv/edgenode` shows them.
 
 dnsmasq may fail to start right after installation: by default it also
 serves DNS on port 53, which systemd-resolved already uses. The lab
@@ -180,14 +196,56 @@ sudo install -m 0440 lab/sudoers.d/edgenode-netboot /etc/sudoers.d/edgenode-netb
 sudo visudo -cf /etc/sudoers.d/edgenode-netboot
 ```
 
-Then restart the runner service so it gets the new groups (in the runner's
-directory: `sudo ./svc.sh stop && sudo ./svc.sh start`). After a change to
-`tools/netboot.py` or `lab/lab.toml`, repeat the matching `install` line;
-the CI job warns while the installed tool differs.
+Then the runner's job hook, which refuses every job but pushes to `main`,
+release tags and manual runs, whatever a workflow file says
+([ADR 0005](adr/0005-ci-on-lab-hardware.md)). It is installed root-owned,
+outside the runner's directory, and the runner's `.env` file names it. Set
+`RUNNER_DIR` to the runner's directory, the one with `svc.sh`:
+
+```sh
+sudo install -D -m 0755 lab/runner/job-started.sh /usr/local/libexec/edgenode-runner/job-started.sh
+echo 'ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/libexec/edgenode-runner/job-started.sh' | \
+    sudo tee -a "$RUNNER_DIR/.env"
+```
+
+Then restart the runner service so it gets the new groups and the hook (in
+the runner's directory: `sudo ./svc.sh stop && sudo ./svc.sh start`). Each
+job's log then shows the hook under **Set up runner**. After a change to
+`tools/netboot.py`, `lab/lab.toml` or `lab/runner/job-started.sh`, repeat
+the matching `install` line; the CI job warns while the installed network
+boot tool differs.
+
+The runner's account needs the `docker` group for `kas-container`, and that
+group is as good as root on the host: any job the runner takes can become
+root. What keeps other people's code from running there is the hook, not
+the account. An account of its own, not a person's, still keeps the jobs
+away from that person's files, such as SSH keys and browser profiles.
 
 The update tests (`tests/update`) call the same tool to stop the network
 boot (`netboot_command` in `tests/env/pi5-dev.yaml`), so the account that
 runs them, locally too, needs the `edgenode-lab` group.
+
+## Repository settings (once)
+
+On GitHub, in the repository's **Settings → Actions → General**:
+
+- **Approval for running fork pull request workflows** (on older pages,
+  *Fork pull request workflows from outside collaborators*): *Require
+  approval for all external contributors*. Fork pull requests run only
+  `checks.yml`, on GitHub's runners, and the hook keeps them off the lab's
+  runner; this keeps them from running at all until someone looks.
+- **Workflow permissions:** *Read repository contents and packages
+  permissions*, and *Allow GitHub Actions to create and approve pull
+  requests* off. The workflows ask for more only where they need it.
+- **Actions permissions:** *Allow actions created by GitHub* only; the
+  workflows use no others. Also require actions to be pinned to a full
+  commit SHA, if the page offers it.
+
+Under **Settings → Code security**, turn on private vulnerability reporting,
+secret scanning and push protection, which `SECURITY.md` relies on.
+
+The `release` environment and a ruleset for release tags are in
+[releases.md](releases.md).
 
 ## Bootloader settings (once)
 
